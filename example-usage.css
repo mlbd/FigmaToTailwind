@@ -1,0 +1,90 @@
+/* 
+ * EXAMPLE: How to use the generated CSS in Tailwind v4
+ * 
+ * 1. Copy the generated CSS from the Figma plugin
+ * 2. Paste it into your main CSS file (e.g., app.css or globals.css)
+ * 3. Use the variables in your HTML/JSX
+ */
+
+/* Step 1: Import Tailwind */
+@import "tailwindcss";
+
+/* Step 2: Add your design tokens from Figma */
+@theme {
+  /* Example variables generated from Figma */
+  
+  /* Colors from Figma Variables */
+  --color-primary: #3b82f6;
+  --color-secondary: #8b5cf6;
+  --color-accent: #f59e0b;
+  --color-neutral-50: #f9fafb;
+  --color-neutral-900: #111827;
+  
+  /* Spacing from Figma Variables */
+  --spacing-xs: 0.25rem;
+  --spacing-sm: 0.5rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
+  --spacing-xl: 2rem;
+  
+  /* Typography from Figma Text Styles */
+  --font-size-sm: 0.875rem;
+  --font-size-base: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.25rem;
+  --font-size-2xl: 1.5rem;
+  
+  --font-family-sans: 'Inter', sans-serif;
+  --font-family-mono: 'Fira Code', monospace;
+  
+  /* Border Radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 1rem;
+  
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+}
+
+/* Step 3: Optional - Add theme-specific overrides */
+@media (prefers-color-scheme: dark) {
+  @theme {
+    /* Dark mode overrides if you have a "Dark" mode in Figma */
+    --color-neutral-50: #111827;
+    --color-neutral-900: #f9fafb;
+  }
+}
+
+/*
+ * USAGE IN HTML/JSX:
+ * 
+ * Method 1: Using arbitrary values with CSS variables
+ * <div class="bg-[--color-primary] text-[--color-neutral-50]">
+ *   Primary button
+ * </div>
+ * 
+ * Method 2: Using spacing
+ * <div class="p-[--spacing-md] m-[--spacing-lg]">
+ *   Padded content
+ * </div>
+ * 
+ * Method 3: Using typography
+ * <h1 class="text-[--font-size-2xl] font-[--font-family-sans]">
+ *   Heading
+ * </h1>
+ * 
+ * Method 4: Combining multiple variables
+ * <button class="
+ *   bg-[--color-primary] 
+ *   text-white 
+ *   px-[--spacing-lg] 
+ *   py-[--spacing-md]
+ *   rounded-[--radius-md]
+ *   shadow-[--shadow-md]
+ *   hover:bg-[--color-secondary]
+ * ">
+ *   Click me
+ * </button>
+ */

@@ -1,0 +1,13 @@
+{
+  "name": "Figma Variables to CSS (@theme)",
+  "id": "figma-to-tailwind-v4",
+  "api": "1.0.0",
+  "main": "dist/code.js",
+  "ui": "dist/ui.html",
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": ["https://cdn.jsdelivr.net"]
+  },
+  "capabilities": [],
+  "permissions": []
+}

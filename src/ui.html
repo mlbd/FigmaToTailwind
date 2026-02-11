@@ -1,0 +1,1426 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    :root {
+      --bg: #0c0c0e;
+      --surface: #16161a;
+      --surface-2: #1e1e24;
+      --surface-3: #26262e;
+      --border: rgba(255,255,255,0.06);
+      --border-hover: rgba(255,255,255,0.12);
+      --text-primary: #efefef;
+      --text-secondary: #8b8b9e;
+      --text-tertiary: #5c5c6e;
+      --accent: #6c5ce7;
+      --accent-hover: #7c6ef7;
+      --accent-glow: rgba(108,92,231,0.25);
+      --green: #34d399;
+      --green-glow: rgba(52,211,153,0.15);
+      --amber: #f59e0b;
+      --amber-bg: rgba(245,158,11,0.08);
+      --amber-border: rgba(245,158,11,0.15);
+      --red: #f87171;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+      font-size: 13px;
+      color: var(--text-primary);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ─── Layout ─── */
+    .plugin {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      min-height: 0;
+    }
+
+    .plugin-header {
+      padding: 20px 20px 0;
+      flex-shrink: 0;
+    }
+
+    .plugin-body {
+      flex: 1;
+      min-height: 0;
+      padding: 0 20px;
+      overflow-y: auto;
+    }
+
+    .plugin-body::-webkit-scrollbar { width: 6px; }
+    .plugin-body::-webkit-scrollbar-track { background: transparent; }
+    .plugin-body::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 3px; }
+
+    .plugin-footer {
+      flex-shrink: 0;
+      padding: 16px 20px 20px;
+    }
+
+    /* ─── Header ─── */
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+
+    .brand-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .brand h1 {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+      letter-spacing: -0.3px;
+    }
+
+    .subtitle {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-top: 2px;
+      margin-bottom: 12px;
+    }
+
+    /* ─── Tab Bar ─── */
+    .tab-bar {
+      display: flex;
+      gap: 2px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 3px;
+      margin-bottom: 14px;
+    }
+
+    .tab-btn {
+      flex: 1;
+      padding: 7px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      background: transparent;
+      border: none;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: all var(--transition);
+      text-align: center;
+      letter-spacing: 0.2px;
+      position: relative;
+      white-space: nowrap;
+    }
+
+    .tab-btn:hover { color: var(--text-secondary); background: var(--surface-2); }
+
+    .tab-btn.active {
+      color: var(--text-primary);
+      background: var(--surface-3);
+    }
+
+    .tab-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 16px;
+      height: 16px;
+      padding: 0 4px;
+      font-size: 9px;
+      font-weight: 700;
+      background: var(--amber);
+      color: #000;
+      border-radius: 8px;
+      margin-left: 4px;
+    }
+
+    .tab-badge:empty { display: none; }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ─── Source Badge ─── */
+    .source-badge {
+      display: none;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 4px 10px;
+      border-radius: 20px;
+      margin-bottom: 14px;
+      letter-spacing: 0.2px;
+    }
+
+    .source-variables {
+      background: var(--accent-glow);
+      color: #a78bfa;
+      border: 1px solid rgba(108,92,231,0.2);
+    }
+
+    .source-scan {
+      background: var(--amber-bg);
+      color: var(--amber);
+      border: 1px solid var(--amber-border);
+    }
+
+    /* ─── Stats ─── */
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .stat {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      transition: border-color var(--transition);
+    }
+
+    .stat:hover { border-color: var(--border-hover); }
+
+    .stat-value {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.5px;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      font-weight: 500;
+    }
+
+    /* ─── Options Panel ─── */
+    .options-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 14px;
+      overflow: hidden;
+    }
+
+    .options-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      cursor: pointer;
+      user-select: none;
+      transition: background var(--transition);
+    }
+
+    .options-header:hover { background: var(--surface-2); }
+
+    .options-header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .options-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+
+    .options-count {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      background: var(--surface-3);
+      padding: 1px 6px;
+      border-radius: 8px;
+    }
+
+    .options-chevron {
+      color: var(--text-tertiary);
+      transition: transform var(--transition);
+      font-size: 11px;
+    }
+
+    .options-panel.open .options-chevron {
+      transform: rotate(180deg);
+    }
+
+    .options-body {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .options-panel.open .options-body {
+      max-height: 500px;
+    }
+
+    .options-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2px 12px;
+      padding: 0 14px 10px;
+    }
+
+    .options-divider {
+      height: 1px;
+      background: var(--border);
+      margin: 6px 14px 10px;
+    }
+
+    .options-advanced-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      padding: 0 14px;
+      margin-bottom: 8px;
+    }
+
+    .options-advanced {
+      padding: 0 14px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    /* ─── Custom Checkbox ─── */
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 0;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .check input {
+      display: none;
+    }
+
+    .check-box {
+      width: 16px;
+      height: 16px;
+      border-radius: 4px;
+      border: 1.5px solid var(--surface-3);
+      background: var(--surface-2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all var(--transition);
+    }
+
+    .check-box svg {
+      opacity: 0;
+      transform: scale(0.5);
+      transition: all var(--transition);
+    }
+
+    .check input:checked ~ .check-box {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .check input:checked ~ .check-box svg {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    .check-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      transition: color var(--transition);
+    }
+
+    .check:hover .check-label { color: var(--text-primary); }
+    .check:hover .check-box { border-color: var(--accent); }
+
+    /* ─── Toggle Switch ─── */
+    .toggle-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 4px 0;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .toggle-row input { display: none; }
+
+    .toggle-track {
+      width: 32px;
+      height: 18px;
+      border-radius: 9px;
+      background: var(--surface-3);
+      flex-shrink: 0;
+      position: relative;
+      transition: background var(--transition);
+      margin-top: 1px;
+    }
+
+    .toggle-track::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--text-tertiary);
+      transition: all var(--transition);
+    }
+
+    .toggle-row input:checked ~ .toggle-track {
+      background: var(--accent);
+    }
+
+    .toggle-row input:checked ~ .toggle-track::after {
+      left: 16px;
+      background: #fff;
+    }
+
+    .toggle-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .toggle-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      transition: color var(--transition);
+    }
+
+    .toggle-row:hover .toggle-label { color: var(--text-primary); }
+
+    .toggle-desc {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      margin-top: 1px;
+    }
+
+    /* ─── Code Preview ─── */
+    .preview-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .preview-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+
+    .preview-dots {
+      display: flex;
+      gap: 5px;
+    }
+
+    .preview-dots span {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--surface-3);
+    }
+
+    .preview {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      max-height: 240px;
+      overflow-y: auto;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+      font-size: 11.5px;
+      line-height: 1.7;
+      color: #a0a0b8;
+      tab-size: 2;
+    }
+
+    .preview::-webkit-scrollbar { width: 6px; }
+    .preview::-webkit-scrollbar-track { background: transparent; }
+    .preview::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 3px; }
+    .preview::-webkit-scrollbar-thumb:hover { background: #3a3a48; }
+
+    .preview code { display: block; white-space: pre; }
+
+    /* ─── Section Copy Buttons ─── */
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 0 4px;
+    }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+
+    .section-copy-btn {
+      opacity: 0;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      padding: 2px 6px;
+      font-size: 10px;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      transition: all var(--transition);
+    }
+
+    .section-header:hover .section-copy-btn { opacity: 1; }
+    .section-copy-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--border-hover);
+      background: var(--surface-2);
+    }
+
+    .section-copy-btn.copied {
+      opacity: 1;
+      color: var(--green);
+      border-color: var(--green);
+    }
+
+    /* ─── Diff view toggle ─── */
+    .preview-toggle {
+      display: flex;
+      gap: 2px;
+      background: var(--surface-2);
+      border-radius: 4px;
+      padding: 2px;
+    }
+
+    .preview-toggle-btn {
+      padding: 3px 8px;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      background: transparent;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+
+    .preview-toggle-btn.active {
+      color: var(--text-primary);
+      background: var(--surface-3);
+    }
+
+    /* ─── Diff lines ─── */
+    .diff-added {
+      border-left: 3px solid var(--green);
+      padding-left: 8px;
+      color: var(--green);
+      background: rgba(52,211,153,0.05);
+    }
+
+    .diff-removed {
+      border-left: 3px solid var(--red);
+      padding-left: 8px;
+      color: var(--red);
+      background: rgba(248,113,113,0.05);
+      text-decoration: line-through;
+    }
+
+    .diff-unchanged {
+      padding-left: 11px;
+      color: var(--text-tertiary);
+    }
+
+    /* Syntax highlighting */
+    .syn-comment { color: #4a4a5c; font-style: italic; }
+    .syn-at { color: #c792ea; }
+    .syn-brace { color: #89ddff; }
+    .syn-prop { color: #82aaff; }
+    .syn-value { color: #c3e88d; }
+    .syn-unit { color: #f78c6c; }
+    .syn-punct { color: #89ddff; }
+
+    /* HTML syntax highlighting */
+    .syn-tag { color: #f07178; }
+    .syn-attr { color: #ffcb6b; }
+    .syn-attr-value { color: #c3e88d; }
+    .syn-html-comment { color: #4a4a5c; font-style: italic; }
+
+    /* ─── Layer Tab ─── */
+    .layer-selection {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 14px;
+      text-align: center;
+    }
+
+    .layer-selection-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 10px;
+      color: var(--text-tertiary);
+    }
+
+    .layer-selection h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+
+    .layer-selection p {
+      font-size: 11px;
+      color: var(--text-tertiary);
+    }
+
+    .layer-node-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      margin-bottom: 14px;
+    }
+
+    .layer-node-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: var(--accent-glow);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      color: #a78bfa;
+    }
+
+    .layer-node-details { flex: 1; min-width: 0; }
+
+    .layer-node-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .layer-node-size {
+      font-size: 10px;
+      color: var(--text-tertiary);
+    }
+
+    .layer-preview {
+      max-height: 320px;
+    }
+
+    /* ─── Lint Tab ─── */
+    .lint-empty {
+      text-align: center;
+      padding: 32px 16px;
+      color: var(--text-tertiary);
+    }
+
+    .lint-empty-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: rgba(52,211,153,0.08);
+      border: 1px solid rgba(52,211,153,0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 10px;
+      color: var(--green);
+    }
+
+    .lint-group {
+      margin-bottom: 12px;
+    }
+
+    .lint-group-header {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 6px;
+    }
+
+    .lint-item {
+      display: flex;
+      gap: 10px;
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+      transition: border-color var(--transition);
+    }
+
+    .lint-item:hover { border-color: var(--border-hover); }
+
+    .lint-icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-size: 11px;
+    }
+
+    .lint-icon-warning {
+      background: var(--amber-bg);
+      color: var(--amber);
+      border: 1px solid var(--amber-border);
+    }
+
+    .lint-icon-info {
+      background: rgba(96,165,250,0.08);
+      color: #60a5fa;
+      border: 1px solid rgba(96,165,250,0.15);
+    }
+
+    .lint-details { flex: 1; min-width: 0; }
+
+    .lint-message {
+      font-size: 12px;
+      color: var(--text-primary);
+      margin-bottom: 2px;
+    }
+
+    .lint-suggestion {
+      font-size: 11px;
+      color: var(--text-tertiary);
+    }
+
+    /* ─── Buttons ─── */
+    .actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 11px 16px;
+      font-size: 13px;
+      font-weight: 500;
+      border: none;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all var(--transition);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      letter-spacing: -0.1px;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 0 0 0 var(--accent-glow);
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      box-shadow: 0 0 20px 0 var(--accent-glow);
+      transform: translateY(-1px);
+    }
+
+    .btn-primary:active { transform: translateY(0); }
+
+    .btn-primary.copied {
+      background: var(--green);
+      box-shadow: 0 0 20px 0 var(--green-glow);
+    }
+
+    .btn-ghost {
+      background: var(--surface-2);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+
+    .btn-ghost:hover {
+      background: var(--surface-3);
+      color: var(--text-primary);
+      border-color: var(--border-hover);
+    }
+
+    .btn-icon { font-size: 14px; line-height: 1; }
+
+    .btn-sm {
+      padding: 8px 10px;
+      font-size: 11px;
+    }
+
+    .btn-sm .btn-icon { font-size: 12px; }
+
+    /* ─── Loading ─── */
+    .loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 20px;
+      gap: 16px;
+    }
+
+    .loader {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 2.5px solid var(--surface-3);
+      border-top-color: var(--accent);
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-text {
+      font-size: 13px;
+      color: var(--text-tertiary);
+    }
+
+    /* ─── Empty state ─── */
+    .empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 24px;
+      text-align: center;
+    }
+
+    .empty-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      margin-bottom: 16px;
+    }
+
+    .empty h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+
+    .empty p {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      line-height: 1.6;
+    }
+
+    /* ─── Error state ─── */
+    .error {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 24px;
+      text-align: center;
+    }
+
+    .error-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: rgba(248,113,113,0.08);
+      border: 1px solid rgba(248,113,113,0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+    }
+
+    .error h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--red);
+      margin-bottom: 6px;
+    }
+
+    .error p {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      line-height: 1.6;
+      margin-bottom: 16px;
+    }
+
+    .btn-retry {
+      padding: 8px 20px;
+      font-size: 12px;
+      font-weight: 500;
+      background: var(--surface-2);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+
+    .btn-retry:hover {
+      background: var(--surface-3);
+      color: var(--text-primary);
+    }
+
+    /* ─── Toast ─── */
+    .toast {
+      position: fixed;
+      bottom: 80px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: var(--surface-2);
+      border: 1px solid var(--green);
+      color: var(--green);
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      white-space: nowrap;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      z-index: 100;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* ─── Fade-in ─── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .fade-in { animation: fadeUp 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+    .fade-in-delay-1 { animation-delay: 0.06s; opacity: 0; }
+    .fade-in-delay-2 { animation-delay: 0.12s; opacity: 0; }
+    .fade-in-delay-3 { animation-delay: 0.18s; opacity: 0; }
+
+    /* ─── Button loading state ─── */
+    .btn-loading {
+      pointer-events: none;
+      opacity: 0.7;
+    }
+
+    .btn-loading .btn-icon {
+      animation: spin 0.7s linear infinite;
+    }
+
+    /* ─── Lint stop button ─── */
+    .lint-stop-btn {
+      margin-top: 10px;
+      padding: 6px 16px;
+      font-size: 12px;
+      font-weight: 500;
+      background: var(--surface-2);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+
+    .lint-stop-btn:hover {
+      background: var(--surface-3);
+      color: var(--text-primary);
+      border-color: var(--border-hover);
+    }
+
+    /* ─── Layer CSS preview area ─── */
+    .layer-css-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding: 8px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .layer-css-toggle:hover { border-color: var(--border-hover); }
+
+    .layer-css-section { margin-top: 14px; }
+    .layer-css-section .preview { max-height: 200px; }
+
+    /* ─── Live Preview Modal ─── */
+    .live-preview-backdrop {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      z-index: 200;
+      display: none;
+      flex-direction: column;
+    }
+
+    .live-preview-backdrop.open {
+      display: flex;
+    }
+
+    .live-preview-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      background: var(--surface);
+    }
+
+    .live-preview-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .live-preview-title span {
+      color: var(--text-primary);
+    }
+
+    .live-preview-close {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-size: 16px;
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      flex-shrink: 0;
+      transition: all var(--transition);
+      margin-left: 8px;
+    }
+
+    .live-preview-close:hover {
+      color: var(--text-primary);
+      background: var(--surface-3);
+      border-color: var(--border-hover);
+    }
+
+    .live-preview-frame {
+      flex: 1;
+      min-height: 0;
+      border: none;
+      background: #fff;
+    }
+
+    .live-preview-loading {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: var(--text-tertiary);
+      font-size: 12px;
+    }
+
+    .live-preview-loading .loader {
+      width: 20px;
+      height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="plugin">
+    <div class="plugin-header">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M3 3h4v4H3zM9 3h4v4H9zM3 9h4v4H3z" fill="rgba(255,255,255,0.9)"/>
+            <path d="M9 9h4v4H9z" fill="rgba(255,255,255,0.4)"/>
+          </svg>
+        </div>
+        <h1>Figma to Tailwind</h1>
+      </div>
+      <p class="subtitle">Design tokens, layers & lint for Tailwind v4</p>
+    </div>
+
+    <div class="plugin-body">
+      <div id="content">
+        <div class="loading">
+          <div class="loader"></div>
+          <div class="loading-text">Scanning your file...</div>
+        </div>
+      </div>
+
+      <div id="app" style="display: none;">
+        <!-- Tab Bar -->
+        <div class="tab-bar fade-in" id="tab-bar">
+          <button class="tab-btn active" data-tab="tokens">Tokens</button>
+          <button class="tab-btn" data-tab="layer">Layer &rarr; TW</button>
+          <button class="tab-btn" data-tab="lint">Lint <span class="tab-badge" id="lint-badge"></span></button>
+        </div>
+
+        <!-- ═══ Tokens Tab ═══ -->
+        <div class="tab-content active" id="tab-tokens">
+          <div id="source-badge" class="source-badge"></div>
+
+          <div class="stats fade-in">
+            <div class="stat">
+              <div class="stat-value" id="var-count">0</div>
+              <div class="stat-label" id="var-count-label">Variables</div>
+            </div>
+            <div class="stat">
+              <div class="stat-value" id="collection-count">0</div>
+              <div class="stat-label" id="collection-count-label">Collections</div>
+            </div>
+          </div>
+
+          <!-- Options Panel -->
+          <div class="options-panel open fade-in fade-in-delay-1" id="options-panel">
+            <div class="options-header" id="options-toggle">
+              <div class="options-header-left">
+                <span class="options-title">Options</span>
+                <span class="options-count" id="options-count">10/10</span>
+              </div>
+              <span class="options-chevron">&#9662;</span>
+            </div>
+            <div class="options-body">
+              <div class="options-grid">
+                <label class="check">
+                  <input type="checkbox" data-opt="colors" checked>
+                  <span class="check-box">
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 6 5 9 10 3"/></svg>
+                  </span>
+                  <span class="check-label">Colors</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" data-opt="fontSizes" checked>
+                  <span class="check-box">
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 6 5 9 10 3"/></svg>
+                  </span>
+                  <span class="check-label">Font Sizes</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" data-opt="fontFamilies" checked>
+                  <span class="check-box">
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 6 5 9 10 3"/></svg>
+                  </span>
+                  <span class="check-label">Font Families</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" data-opt="lineHeights" checked>
+                  <span class="check-box">
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 6 5 9 10 3"/></svg>
+                  </span>
+                  <span class="check-label">Line Heights</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" data-opt="fontWeights" checked>
+                  <span class="check-box">
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 6 5 9 10 3"/></svg>
+                  </span>
+                  <span class="check-label">Font Weights</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" data-opt="spacing" checked>
+                  <span class="check-box">
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 6 5 9 10 3"/></svg>
+                  </span>
+                  <span class="check-label">Spacing</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" data-opt="borderRadius" checked>
+                  <span class="check-box">
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 6 5 9 10 3"/></svg>
+                  </span>
+                  <span class="check-label">Border Radius</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" data-opt="shadows" checked>
+                  <span class="check-box">
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 6 5 9 10 3"/></svg>
+                  </span>
+                  <span class="check-label">Shadows</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" data-opt="gradients" checked>
+                  <span class="check-box">
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 6 5 9 10 3"/></svg>
+                  </span>
+                  <span class="check-label">Gradients</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" data-opt="animations" checked>
+                  <span class="check-box">
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 6 5 9 10 3"/></svg>
+                  </span>
+                  <span class="check-label">Animations</span>
+                </label>
+              </div>
+              <div class="options-divider"></div>
+              <div class="options-advanced-label">Advanced</div>
+              <div class="options-advanced">
+                <label class="toggle-row">
+                  <input type="checkbox" data-opt="scalableFontSize">
+                  <span class="toggle-track"></span>
+                  <span class="toggle-info">
+                    <span class="toggle-label">Scalable Font Size</span>
+                    <span class="toggle-desc">Fluid clamp() for responsive layouts</span>
+                  </span>
+                </label>
+                <label class="toggle-row">
+                  <input type="checkbox" data-opt="defaultClasses">
+                  <span class="toggle-track"></span>
+                  <span class="toggle-info">
+                    <span class="toggle-label">Default Classes</span>
+                    <span class="toggle-desc">Map tokens to Tailwind built-in names</span>
+                  </span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="fade-in fade-in-delay-2">
+            <div class="preview-header">
+              <span class="preview-label">Output</span>
+              <div class="preview-toggle" id="preview-toggle">
+                <button class="preview-toggle-btn active" data-view="output">Output</button>
+                <button class="preview-toggle-btn" data-view="diff">Diff</button>
+              </div>
+            </div>
+            <!-- Sections container for per-section copy -->
+            <div id="sections-container"></div>
+            <div class="preview" id="preview-output">
+              <code id="css-preview"></code>
+            </div>
+            <div class="preview" id="preview-diff" style="display:none;">
+              <code id="diff-preview"></code>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ Layer Tab ═══ -->
+        <div class="tab-content" id="tab-layer">
+          <div id="layer-no-selection" class="layer-selection">
+            <div class="layer-selection-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <path d="M3 9h18M9 3v18"/>
+              </svg>
+            </div>
+            <h3>Select a layer</h3>
+            <p>Select a frame or component in Figma<br>to generate Tailwind HTML</p>
+          </div>
+
+          <div id="layer-selected" style="display:none;">
+            <div class="layer-node-info" id="layer-node-info">
+              <div class="layer-node-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2"/>
+                </svg>
+              </div>
+              <div class="layer-node-details">
+                <div class="layer-node-name" id="layer-node-name">Frame</div>
+                <div class="layer-node-size" id="layer-node-size">0 x 0</div>
+              </div>
+            </div>
+
+            <label class="layer-css-toggle check">
+              <input type="checkbox" id="layer-css-toggle">
+              <span class="check-box">
+                <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 6 5 9 10 3"/></svg>
+              </span>
+              <span class="check-label">Also generate CSS variables</span>
+            </label>
+
+            <div class="preview-header">
+              <span class="preview-label">Generated HTML</span>
+              <div class="preview-dots"><span></span><span></span><span></span></div>
+            </div>
+            <div class="preview layer-preview">
+              <code id="layer-preview"></code>
+            </div>
+
+            <div class="layer-css-section" id="layer-css-section" style="display:none;">
+              <div class="preview-header">
+                <span class="preview-label">Generated CSS</span>
+                <div class="preview-dots"><span></span><span></span><span></span></div>
+              </div>
+              <div class="preview">
+                <code id="layer-css-preview"></code>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ Lint Tab ═══ -->
+        <div class="tab-content" id="tab-lint">
+          <div id="lint-loading" style="display:none;">
+            <div class="loading">
+              <div class="loader"></div>
+              <div class="loading-text">Analyzing design tokens...</div>
+              <button class="lint-stop-btn" id="lint-stop-btn">Stop</button>
+            </div>
+          </div>
+          <div id="lint-results"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="plugin-footer" id="footer" style="display: none;">
+      <!-- Tokens footer -->
+      <div class="actions fade-in fade-in-delay-3" id="footer-tokens">
+        <button class="btn btn-primary" id="copy-btn">
+          <span class="btn-icon" id="copy-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="5" y="5" width="9" height="9" rx="1.5"/>
+              <path d="M5 11H3.5A1.5 1.5 0 0 1 2 9.5V3.5A1.5 1.5 0 0 1 3.5 2h6A1.5 1.5 0 0 1 11 3.5V5"/>
+            </svg>
+          </span>
+          <span id="copy-text">Copy CSS</span>
+        </button>
+        <button class="btn btn-ghost" id="refresh-btn">
+          <span class="btn-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2.5 8a5.5 5.5 0 0 1 9.3-4"/>
+              <path d="M13.5 8a5.5 5.5 0 0 1-9.3 4"/>
+              <path d="M11.8 2v2.5h2.5"/>
+              <path d="M4.2 14v-2.5H1.7"/>
+            </svg>
+          </span>
+          Refresh
+        </button>
+      </div>
+      <!-- Layer footer -->
+      <div id="footer-layer" style="display:none;">
+        <div class="actions" style="margin-bottom: 6px;">
+          <button class="btn btn-primary" id="generate-layer-btn">
+            <span class="btn-icon" id="generate-layer-icon">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 2l8 6-8 6z"/>
+              </svg>
+            </span>
+            <span id="generate-layer-text">Generate</span>
+          </button>
+          <button class="btn btn-ghost" id="preview-layer-btn" style="display:none;">
+            <span class="btn-icon">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z"/>
+                <circle cx="8" cy="8" r="2.5"/>
+              </svg>
+            </span>
+            Preview
+          </button>
+        </div>
+        <div class="actions layer-actions-secondary" id="layer-secondary-actions" style="display:none;">
+          <button class="btn btn-ghost btn-sm" id="copy-layer-btn">
+            <span class="btn-icon">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="5" width="9" height="9" rx="1.5"/>
+                <path d="M5 11H3.5A1.5 1.5 0 0 1 2 9.5V3.5A1.5 1.5 0 0 1 3.5 2h6A1.5 1.5 0 0 1 11 3.5V5"/>
+              </svg>
+            </span>
+            HTML
+          </button>
+          <button class="btn btn-ghost btn-sm" id="copy-layer-css-btn" style="display:none;">
+            <span class="btn-icon">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="5" width="9" height="9" rx="1.5"/>
+                <path d="M5 11H3.5A1.5 1.5 0 0 1 2 9.5V3.5A1.5 1.5 0 0 1 3.5 2h6A1.5 1.5 0 0 1 11 3.5V5"/>
+              </svg>
+            </span>
+            CSS
+          </button>
+          <button class="btn btn-ghost btn-sm" id="download-zip-btn" style="display:none;">
+            <span class="btn-icon">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 2v8M5 7l3 3 3-3M3 12v1.5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5V12"/>
+              </svg>
+            </span>
+            ZIP
+          </button>
+        </div>
+      </div>
+      <!-- Lint footer -->
+      <div class="actions" id="footer-lint" style="display:none;">
+        <button class="btn btn-primary" id="run-lint-btn">
+          <span class="btn-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 1v6M8 11v1M4.93 4.93l-.7-.7M11.77 11.77l-.7-.7M1 8h6M11 8h1M4.93 11.07l-.7.7M11.77 4.23l-.7.7"/>
+            </svg>
+          </span>
+          Run Lint
+        </button>
+      </div>
+    </div>
+
+    <!-- ═══ Live Preview Modal ═══ -->
+    <div class="live-preview-backdrop" id="live-preview-backdrop">
+      <div class="live-preview-header">
+        <span class="live-preview-title">Preview: <span id="live-preview-title"></span></span>
+        <button class="live-preview-close" id="live-preview-close">&times;</button>
+      </div>
+      <iframe class="live-preview-frame" id="live-preview-frame" sandbox="allow-scripts"></iframe>
+    </div>
+
+    <div class="toast" id="toast">Copied to clipboard</div>
+  </div>
+</body>
+</html>
