@@ -1528,6 +1528,49 @@ function buildThemeCSS(registry: TokenRegistry): string {
   return lines.join('\n');
 }
 
+// ─── Shared helpers for style extraction ───
+
+// Extract angle from Figma gradientTransform matrix and map to closest Tailwind direction
+function gradientAngleToDirection(transform: ReadonlyArray<ReadonlyArray<number>>): string {
+  // Figma gradientTransform is a 2x3 affine matrix [[a, b, tx], [c, d, ty]]
+  const angle = Math.round(Math.atan2(transform[0][1], transform[0][0]) * (180 / Math.PI));
+  // Normalize to 0-360
+  const normalized = ((angle % 360) + 360) % 360;
+  // Map to closest Tailwind direction
+  if (normalized >= 337 || normalized < 23) return 'r';
+  if (normalized >= 23 && normalized < 68) return 'br';
+  if (normalized >= 68 && normalized < 113) return 'b';
+  if (normalized >= 113 && normalized < 158) return 'bl';
+  if (normalized >= 158 && normalized < 203) return 'l';
+  if (normalized >= 203 && normalized < 248) return 'tl';
+  if (normalized >= 248 && normalized < 293) return 't';
+  return 'tr';
+}
+
+// Extract gradient stop colors as hex
+function gradientStopHex(stop: ColorStop): string {
+  return rgbaToHex(stop.color.r, stop.color.g, stop.color.b, stop.color.a !== undefined ? stop.color.a : 1);
+}
+
+// Blend mode to Tailwind class mapping
+const BLEND_MODE_MAP: Record<string, string> = {
+  'MULTIPLY': 'mix-blend-multiply',
+  'SCREEN': 'mix-blend-screen',
+  'OVERLAY': 'mix-blend-overlay',
+  'DARKEN': 'mix-blend-darken',
+  'LIGHTEN': 'mix-blend-lighten',
+  'COLOR_DODGE': 'mix-blend-color-dodge',
+  'COLOR_BURN': 'mix-blend-color-burn',
+  'HARD_LIGHT': 'mix-blend-hard-light',
+  'SOFT_LIGHT': 'mix-blend-soft-light',
+  'DIFFERENCE': 'mix-blend-difference',
+  'EXCLUSION': 'mix-blend-exclusion',
+  'HUE': 'mix-blend-hue',
+  'SATURATION': 'mix-blend-saturation',
+  'COLOR': 'mix-blend-color',
+  'LUMINOSITY': 'mix-blend-luminosity',
+};
+
 // Modified nodeToClasses that uses a registry when provided
 function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean, registry: TokenRegistry): string[] {
   const classes: string[] = [];
@@ -1601,10 +1644,12 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
     }
   }
 
-  // Background / text color
+  // Background / text color + gradients
   if ('fills' in node && Array.isArray(node.fills)) {
+    let fillHandled = false;
     for (const paint of node.fills as ReadonlyArray<Paint>) {
-      if (paint.type === 'SOLID' && paint.visible !== false) {
+      if (paint.visible === false) continue;
+      if (paint.type === 'SOLID') {
         const hex = rgbaToHex(paint.color.r, paint.color.g, paint.color.b, paint.opacity !== undefined ? paint.opacity : 1);
         const colorName = registerColor(registry, hex);
         if (node.type === 'TEXT') {
@@ -1612,6 +1657,26 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
         } else {
           classes.push(`bg-${colorName}`);
         }
+        fillHandled = true;
+        break;
+      }
+      if (!fillHandled && paint.type === 'GRADIENT_LINEAR' && (paint as any).gradientStops) {
+        const grad = paint as GradientPaint;
+        const dir = gradientAngleToDirection(grad.gradientTransform);
+        const stops = grad.gradientStops;
+        classes.push(`bg-gradient-to-${dir}`);
+        if (stops.length > 0) classes.push(`from-[${gradientStopHex(stops[0])}]`);
+        if (stops.length > 2) classes.push(`via-[${gradientStopHex(stops[Math.floor(stops.length / 2)])}]`);
+        if (stops.length > 1) classes.push(`to-[${gradientStopHex(stops[stops.length - 1])}]`);
+        fillHandled = true;
+        break;
+      }
+      if (!fillHandled && paint.type === 'GRADIENT_RADIAL' && (paint as any).gradientStops) {
+        const grad = paint as GradientPaint;
+        const stops = grad.gradientStops;
+        const stopStrs = stops.map((s: ColorStop) => `${gradientStopHex(s)} ${Math.round(s.position * 100)}%`).join(',');
+        classes.push(`bg-[radial-gradient(circle,${stopStrs})]`);
+        fillHandled = true;
         break;
       }
     }
@@ -1621,18 +1686,49 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
   if ('strokes' in node && Array.isArray(node.strokes) && node.strokes.length > 0) {
     const stroke = (node.strokes as ReadonlyArray<Paint>)[0];
     if (stroke && stroke.type === 'SOLID' && stroke.visible !== false) {
-      const sw = typeof (node as any).strokeWeight === 'number' ? (node as any).strokeWeight : 1;
-      if (sw === 1) classes.push('border');
-      else classes.push(`border-${sw}`);
+      // Check for individual stroke weights
+      const nodeAny = node as any;
+      const hasIndividualStrokes = typeof nodeAny.strokeTopWeight === 'number' &&
+        (nodeAny.strokeTopWeight !== nodeAny.strokeBottomWeight ||
+         nodeAny.strokeTopWeight !== nodeAny.strokeLeftWeight ||
+         nodeAny.strokeTopWeight !== nodeAny.strokeRightWeight);
+      if (hasIndividualStrokes) {
+        if (nodeAny.strokeTopWeight > 0) classes.push(nodeAny.strokeTopWeight === 1 ? 'border-t' : `border-t-${nodeAny.strokeTopWeight}`);
+        if (nodeAny.strokeRightWeight > 0) classes.push(nodeAny.strokeRightWeight === 1 ? 'border-r' : `border-r-${nodeAny.strokeRightWeight}`);
+        if (nodeAny.strokeBottomWeight > 0) classes.push(nodeAny.strokeBottomWeight === 1 ? 'border-b' : `border-b-${nodeAny.strokeBottomWeight}`);
+        if (nodeAny.strokeLeftWeight > 0) classes.push(nodeAny.strokeLeftWeight === 1 ? 'border-l' : `border-l-${nodeAny.strokeLeftWeight}`);
+      } else {
+        const sw = typeof nodeAny.strokeWeight === 'number' ? nodeAny.strokeWeight : 1;
+        if (sw === 1) classes.push('border');
+        else classes.push(`border-${sw}`);
+      }
       const hex = rgbaToHex(stroke.color.r, stroke.color.g, stroke.color.b, stroke.opacity !== undefined ? stroke.opacity : 1);
       classes.push(`border-${registerColor(registry, hex)}`);
     }
   }
 
-  // Border radius
+  // Dash pattern (border style)
+  if ('dashPattern' in node) {
+    const dp = (node as any).dashPattern;
+    if (Array.isArray(dp) && dp.length > 0) {
+      classes.push('border-dashed');
+    }
+  }
+
+  // Border radius (with individual corner support)
   if ('cornerRadius' in node) {
     const r = (node as any).cornerRadius;
-    if (typeof r === 'number' && r > 0) {
+    if (r === figma.mixed) {
+      const nodeAny = node as any;
+      const tl = typeof nodeAny.topLeftRadius === 'number' ? nodeAny.topLeftRadius : 0;
+      const tr = typeof nodeAny.topRightRadius === 'number' ? nodeAny.topRightRadius : 0;
+      const br = typeof nodeAny.bottomRightRadius === 'number' ? nodeAny.bottomRightRadius : 0;
+      const bl = typeof nodeAny.bottomLeftRadius === 'number' ? nodeAny.bottomLeftRadius : 0;
+      if (tl > 0) classes.push(`rounded-tl-${registerRadius(registry, tl)}`);
+      if (tr > 0) classes.push(`rounded-tr-${registerRadius(registry, tr)}`);
+      if (br > 0) classes.push(`rounded-br-${registerRadius(registry, br)}`);
+      if (bl > 0) classes.push(`rounded-bl-${registerRadius(registry, bl)}`);
+    } else if (typeof r === 'number' && r > 0) {
       const name = registerRadius(registry, r);
       classes.push(`rounded-${name}`);
     }
@@ -1641,35 +1737,91 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
   // Typography
   if (node.type === 'TEXT') {
     const textNode = node as TextNode;
-    const fontSize = typeof textNode.fontSize === 'number' ? textNode.fontSize : null;
-    if (fontSize) {
-      const name = registerFontSize(registry, fontSize);
+    // Resolve fontSize — may be figma.mixed for multi-style text
+    var resolvedFontSize: number | null = null;
+    if (typeof textNode.fontSize === 'number') {
+      resolvedFontSize = textNode.fontSize;
+    } else if (textNode.characters.length > 0) {
+      try { resolvedFontSize = textNode.getRangeFontSize(0, 1) as number; } catch (e) {}
+    }
+    if (resolvedFontSize) {
+      const name = registerFontSize(registry, resolvedFontSize);
       classes.push(`text-${name}`);
     }
-    if (typeof textNode.fontName === 'object' && 'style' in textNode.fontName) {
-      const weight = fontStyleToWeight(textNode.fontName.style);
+    // Resolve fontName — may be figma.mixed
+    var resolvedFontName: FontName | null = null;
+    if (typeof textNode.fontName === 'object' && 'family' in textNode.fontName) {
+      resolvedFontName = textNode.fontName as FontName;
+    } else if (textNode.characters.length > 0) {
+      try { resolvedFontName = textNode.getRangeFontName(0, 1) as FontName; } catch (e) {}
+    }
+    // Font family
+    if (resolvedFontName) {
+      const family = resolvedFontName.family;
+      classes.push(`font-['${family.replace(/'/g, "\\'").replace(/\s+/g, '_')}']`);
+    }
+    // Font weight
+    if (resolvedFontName) {
+      const weight = fontStyleToWeight(resolvedFontName.style);
       if (weight !== 400) {
         const wName = TW_WEIGHT_MAP[weight] || `[${weight}]`;
         classes.push(`font-${wName}`);
       }
     }
+    // Line height — may be figma.mixed
+    var resolvedLineHeight: { value: number; unit: string } | null = null;
     if (typeof textNode.lineHeight === 'object' && 'value' in textNode.lineHeight) {
-      const lhObj = textNode.lineHeight as { value: number; unit: string };
-      if (lhObj.unit === 'PIXELS' && fontSize) {
-        const ratio = lhObj.value / fontSize;
-        const closest = TW_LEADING_SCALE.reduce((best, s) => Math.abs(s.val - ratio) < Math.abs(best.val - ratio) ? s : best);
-        if (Math.abs(closest.val - ratio) < 0.1) classes.push(`leading-${closest.name}`);
-      }
+      resolvedLineHeight = textNode.lineHeight as { value: number; unit: string };
+    } else if (textNode.characters.length > 0) {
+      try {
+        var lhRange = textNode.getRangeLineHeight(0, 1) as any;
+        if (lhRange && typeof lhRange === 'object' && 'value' in lhRange) resolvedLineHeight = lhRange;
+      } catch (e) {}
     }
+    if (resolvedLineHeight && resolvedLineHeight.unit === 'PIXELS' && resolvedFontSize) {
+      const ratio = resolvedLineHeight.value / resolvedFontSize;
+      const closest = TW_LEADING_SCALE.reduce((best, s) => Math.abs(s.val - ratio) < Math.abs(best.val - ratio) ? s : best);
+      if (Math.abs(closest.val - ratio) < 0.1) classes.push(`leading-${closest.name}`);
+    }
+    // Letter spacing — may be figma.mixed
+    var resolvedLetterSpacing: { value: number } | null = null;
     if (typeof textNode.letterSpacing === 'object' && 'value' in textNode.letterSpacing) {
-      const ls = (textNode.letterSpacing as any).value;
-      if (typeof ls === 'number' && Math.abs(ls) > 0.1) {
-        if (ls < -0.3) classes.push('tracking-tighter');
-        else if (ls < 0) classes.push('tracking-tight');
-        else if (ls > 0.5) classes.push('tracking-wider');
-        else if (ls > 0.2) classes.push('tracking-wide');
-      }
+      resolvedLetterSpacing = textNode.letterSpacing as { value: number };
+    } else if (textNode.characters.length > 0) {
+      try {
+        var lsRange = textNode.getRangeLetterSpacing(0, 1) as any;
+        if (lsRange && typeof lsRange === 'object' && 'value' in lsRange) resolvedLetterSpacing = lsRange;
+      } catch (e) {}
     }
+    if (resolvedLetterSpacing && typeof resolvedLetterSpacing.value === 'number' && Math.abs(resolvedLetterSpacing.value) > 0.1) {
+      const ls = resolvedLetterSpacing.value;
+      if (ls < -0.3) classes.push('tracking-tighter');
+      else if (ls < 0) classes.push('tracking-tight');
+      else if (ls > 0.5) classes.push('tracking-wider');
+      else if (ls > 0.2) classes.push('tracking-wide');
+    }
+    // Text decoration — may be figma.mixed
+    var resolvedDecoration: string | null = null;
+    var rawDec = (textNode as any).textDecoration;
+    if (typeof rawDec === 'string') {
+      resolvedDecoration = rawDec;
+    } else if (textNode.characters.length > 0) {
+      try { resolvedDecoration = (textNode as any).getRangeTextDecoration(0, 1) as string; } catch (e) {}
+    }
+    if (resolvedDecoration === 'UNDERLINE') classes.push('underline');
+    else if (resolvedDecoration === 'STRIKETHROUGH') classes.push('line-through');
+    // Text case — may be figma.mixed
+    var resolvedCase: string | null = null;
+    var rawCase = (textNode as any).textCase;
+    if (typeof rawCase === 'string') {
+      resolvedCase = rawCase;
+    } else if (textNode.characters.length > 0) {
+      try { resolvedCase = (textNode as any).getRangeTextCase(0, 1) as string; } catch (e) {}
+    }
+    if (resolvedCase === 'UPPER') classes.push('uppercase');
+    else if (resolvedCase === 'LOWER') classes.push('lowercase');
+    else if (resolvedCase === 'TITLE') classes.push('capitalize');
+    // Text alignment
     if (textNode.textAlignHorizontal === 'CENTER') classes.push('text-center');
     else if (textNode.textAlignHorizontal === 'RIGHT') classes.push('text-right');
   }
@@ -1680,17 +1832,99 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
     classes.push(`opacity-${op}`);
   }
 
-  // Shadow
+  // Rotation
+  if ('rotation' in node && typeof (node as any).rotation === 'number' && Math.abs((node as any).rotation) > 0.1) {
+    const deg = Math.round(-(node as any).rotation); // Negate: Figma uses counter-clockwise
+    classes.push(`rotate-[${deg}deg]`);
+  }
+
+  // Blend mode
+  if ('blendMode' in node && typeof (node as any).blendMode === 'string') {
+    const blendClass = BLEND_MODE_MAP[(node as any).blendMode];
+    if (blendClass) classes.push(blendClass);
+  }
+
+  // Min/Max constraints
+  if (isFrame) {
+    const nodeAny = node as any;
+    if (typeof nodeAny.minWidth === 'number' && nodeAny.minWidth > 0) classes.push(`min-w-[${Math.round(nodeAny.minWidth)}px]`);
+    if (typeof nodeAny.maxWidth === 'number' && nodeAny.maxWidth > 0 && nodeAny.maxWidth < 10000) classes.push(`max-w-[${Math.round(nodeAny.maxWidth)}px]`);
+    if (typeof nodeAny.minHeight === 'number' && nodeAny.minHeight > 0) classes.push(`min-h-[${Math.round(nodeAny.minHeight)}px]`);
+    if (typeof nodeAny.maxHeight === 'number' && nodeAny.maxHeight > 0 && nodeAny.maxHeight < 10000) classes.push(`max-h-[${Math.round(nodeAny.maxHeight)}px]`);
+  }
+
+  // Auto-layout child sizing
+  if (parentIsAutoLayout) {
+    const nodeAny = node as any;
+    if (typeof nodeAny.layoutSizingHorizontal === 'string' && nodeAny.layoutSizingHorizontal === 'FILL') {
+      if (!classes.includes('flex-1') && !classes.includes('self-stretch')) classes.push('w-full');
+    }
+    if (typeof nodeAny.layoutSizingVertical === 'string' && nodeAny.layoutSizingVertical === 'FILL') {
+      if (!classes.includes('flex-1')) classes.push('h-full');
+    }
+  }
+
+  // Effects: Shadow, Inner Shadow, Blur
   if ('effects' in node && Array.isArray(node.effects)) {
+    let dropShadowHandled = false;
     for (const effect of node.effects as ReadonlyArray<Effect>) {
-      if (effect.type === 'DROP_SHADOW' && effect.visible !== false) {
+      if (effect.visible === false) continue;
+      if (effect.type === 'DROP_SHADOW' && !dropShadowHandled) {
         const shadow = effect as DropShadowEffect;
         if (shadow.radius <= 3) classes.push('shadow-sm');
         else if (shadow.radius <= 8) classes.push('shadow');
         else if (shadow.radius <= 16) classes.push('shadow-md');
         else if (shadow.radius <= 25) classes.push('shadow-lg');
         else classes.push('shadow-xl');
-        break;
+        // Shadow color (if not default black)
+        const sc = shadow.color;
+        if (sc && (sc.r > 0.05 || sc.g > 0.05 || sc.b > 0.05)) {
+          const shadowHex = rgbaToHex(sc.r, sc.g, sc.b, sc.a !== undefined ? sc.a : 1);
+          classes.push(`shadow-[${shadowHex}]`);
+        }
+        dropShadowHandled = true;
+      }
+      if (effect.type === 'INNER_SHADOW') {
+        const inner = effect as any;
+        const x = Math.round(inner.offset && inner.offset.x || 0);
+        const y = Math.round(inner.offset && inner.offset.y || 0);
+        const blur = Math.round(inner.radius || 0);
+        const col = inner.color ? rgbaToHex(inner.color.r, inner.color.g, inner.color.b, inner.color.a !== undefined ? inner.color.a : 1) : '#00000040';
+        classes.push(`shadow-[inset_${x}px_${y}px_${blur}px_${col}]`);
+      }
+      if (effect.type === 'LAYER_BLUR') {
+        const blur = Math.round((effect as any).radius || 0);
+        if (blur > 0) classes.push(`blur-[${blur}px]`);
+      }
+      if (effect.type === 'BACKGROUND_BLUR') {
+        const blur = Math.round((effect as any).radius || 0);
+        if (blur > 0) classes.push(`backdrop-blur-[${blur}px]`);
+      }
+    }
+  }
+
+  // Counter axis spacing (wrap gap)
+  if (isFrame) {
+    const frame = node as FrameNode;
+    if ((frame as any).layoutWrap === 'WRAP') {
+      const counterSpacing = (frame as any).counterAxisSpacing;
+      if (typeof counterSpacing === 'number' && counterSpacing > 0 && typeof frame.itemSpacing === 'number' && frame.itemSpacing > 0) {
+        // If counter axis spacing differs from item spacing, use gap-x/gap-y instead
+        if (counterSpacing !== frame.itemSpacing) {
+          // Remove the generic gap class that was already added
+          const gapIdx = classes.findIndex(c => c.startsWith('gap-') && !c.startsWith('gap-x-') && !c.startsWith('gap-y-'));
+          if (gapIdx !== -1) {
+            classes.splice(gapIdx, 1);
+            // Determine axes based on layout direction
+            if (frame.layoutMode === 'HORIZONTAL') {
+              classes.push(`gap-x-${registerSpacing(registry, frame.itemSpacing)}`);
+              classes.push(`gap-y-${registerSpacing(registry, counterSpacing)}`);
+            } else {
+              classes.push(`gap-y-${registerSpacing(registry, frame.itemSpacing)}`);
+              classes.push(`gap-x-${registerSpacing(registry, counterSpacing)}`);
+            }
+          }
+        }
       }
     }
   }
@@ -1708,6 +1942,8 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
   const classStr = classes.length > 0 ? ` class="${classes.join(' ')}"` : '';
 
   if (hasImageFill(node)) {
+    const imgClasses = [...classes, ...getImageClasses(node, parentIsAutoLayout)];
+    const imgClassStr = imgClasses.length > 0 ? ` class="${imgClasses.join(' ')}"` : '';
     const name = node.name || 'image';
     const id = nextAssetId();
     try {
@@ -1718,19 +1954,24 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
         fileName: toAssetFileName(name, 'png', usedFileNames),
       };
     } catch (e) {
-      // Fallback if export fails
-      return `${pad}<img${classStr} src="/placeholder.svg" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+      return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${name.replace(/"/g, '&quot;')}" />\n`;
     }
-    return `${pad}<img${classStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    return `${pad}<img${imgClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" />\n`;
   }
 
+  // Detect semantic element
+  const semantic = detectSemanticElement(node, isTopLevel);
+  const allClasses = [...classes, ...semantic.extraClasses];
+
   if (node.type === 'TEXT') {
-    const tag = chooseHTMLTag(node, false);
+    const tag = semantic.tag;
     const text = getTextContent(node as TextNode);
-    return `${pad}<${tag}${classStr}>${text}</${tag}>\n`;
+    const finalClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+    return `${pad}<${tag}${finalClassStr}>${text}</${tag}>\n`;
   }
 
   if (node.type === 'VECTOR' || node.type === 'ELLIPSE' || node.type === 'LINE' || node.type === 'STAR' || node.type === 'POLYGON') {
+    const vecClasses = [...allClasses, ...getVectorImgClasses()];
     const name = node.name || 'icon';
     const id = nextAssetId();
     try {
@@ -1742,17 +1983,26 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
       };
       const w = Math.round(node.width);
       const h = Math.round(node.height);
-      return `${pad}<img${classStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" width="${w}" height="${h}" />\n`;
+      const vecClassStr = vecClasses.length > 0 ? ` class="${vecClasses.join(' ')}"` : '';
+      return `${pad}<img${vecClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" width="${w}" height="${h}" />\n`;
     } catch (e) {
       return `${pad}<!-- ${name} -->\n`;
     }
   }
 
   if (node.type === 'RECTANGLE') {
-    return `${pad}<div${classStr}></div>\n`;
+    if (semantic.selfClosing) {
+      const hrClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+      return `${pad}<${semantic.tag}${hrClassStr} />\n`;
+    }
+    const finalClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+    return `${pad}<div${finalClassStr}></div>\n`;
   }
 
   if (node.type === 'GROUP') {
+    if (shouldExportAsCompositeImage(node)) {
+      return await exportCompositeImage(node, indent, pad, [], assets, usedFileNames, false);
+    }
     const group = node as GroupNode;
     let html = '';
     for (const child of group.children) {
@@ -1762,16 +2012,27 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
   }
 
   if (node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE') {
+    if (shouldExportAsCompositeImage(node)) {
+      return await exportCompositeImage(node, indent, pad, allClasses, assets, usedFileNames, false);
+    }
     const frame = node as FrameNode;
-    const tag = chooseHTMLTag(node, isTopLevel);
+    const tag = semantic.tag;
     const isAutoLayout = frame.layoutMode && frame.layoutMode !== 'NONE';
     const isOverlap = !isAutoLayout && frame.children.length > 0 && inferLayoutFromChildren(frame) === 'overlap';
+
+    if (semantic.selfClosing) {
+      const scClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+      const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
+      return `${pad}<${tag}${scClassStr}${attrStr} />\n`;
+    }
 
     let html = '';
     if (node.type === 'COMPONENT' || node.type === 'INSTANCE') {
       html += `${pad}<!-- ${node.name} -->\n`;
     }
-    html += `${pad}<${tag}${classStr}>\n`;
+    const finalClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+    const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
+    html += `${pad}<${tag}${finalClassStr}${attrStr}>\n`;
 
     for (const child of frame.children) {
       if (child.visible === false) continue;
@@ -1783,14 +2044,20 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
         if (top > 0) childClasses.push(`top-${registerSpacing(registry, top)}`);
         if (left > 0) childClasses.push(`left-${registerSpacing(registry, left)}`);
         if (child.type === 'TEXT') {
-          const childTag = chooseHTMLTag(child, false);
+          const childSemantic = detectSemanticElement(child, false);
           const text = getTextContent(child as TextNode);
-          html += `${pad}  <${childTag} class="${childClasses.join(' ')}">${text}</${childTag}>\n`;
+          html += `${pad}  <${childSemantic.tag} class="${childClasses.join(' ')}">${text}</${childSemantic.tag}>\n`;
         } else {
           html += await generateLayerHTMLWithRegistry(child, indent + 1, false, false, registry, assets, usedFileNames);
         }
       } else {
-        html += await generateLayerHTMLWithRegistry(child, indent + 1, false, !!isAutoLayout, registry, assets, usedFileNames);
+        if (semantic.wrapChildren) {
+          html += `${pad}  <${semantic.wrapChildren}>\n`;
+          html += await generateLayerHTMLWithRegistry(child, indent + 2, false, !!isAutoLayout, registry, assets, usedFileNames);
+          html += `${pad}  </${semantic.wrapChildren}>\n`;
+        } else {
+          html += await generateLayerHTMLWithRegistry(child, indent + 1, false, !!isAutoLayout, registry, assets, usedFileNames);
+        }
       }
     }
 
@@ -1798,7 +2065,8 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
     return html;
   }
 
-  return `${pad}<div${classStr}></div>\n`;
+  const fallbackClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+  return `${pad}<div${fallbackClassStr}></div>\n`;
 }
 
 function inferLayoutFromChildren(frame: FrameNode): 'row' | 'col' | 'overlap' {
@@ -1923,16 +2191,38 @@ function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
     }
   }
 
-  // Background color
+  // Background color + gradients
   if ('fills' in node && Array.isArray(node.fills)) {
+    let fillHandled = false;
     for (const paint of node.fills as ReadonlyArray<Paint>) {
-      if (paint.type === 'SOLID' && paint.visible !== false) {
+      if (paint.visible === false) continue;
+      if (paint.type === 'SOLID') {
         const hex = rgbaToHex(paint.color.r, paint.color.g, paint.color.b, paint.opacity !== undefined ? paint.opacity : 1);
         if (node.type === 'TEXT') {
           classes.push(`text-${hexToTailwindColor(hex)}`);
         } else {
           classes.push(`bg-${hexToTailwindColor(hex)}`);
         }
+        fillHandled = true;
+        break;
+      }
+      if (!fillHandled && paint.type === 'GRADIENT_LINEAR' && (paint as any).gradientStops) {
+        const grad = paint as GradientPaint;
+        const dir = gradientAngleToDirection(grad.gradientTransform);
+        const stops = grad.gradientStops;
+        classes.push(`bg-gradient-to-${dir}`);
+        if (stops.length > 0) classes.push(`from-[${gradientStopHex(stops[0])}]`);
+        if (stops.length > 2) classes.push(`via-[${gradientStopHex(stops[Math.floor(stops.length / 2)])}]`);
+        if (stops.length > 1) classes.push(`to-[${gradientStopHex(stops[stops.length - 1])}]`);
+        fillHandled = true;
+        break;
+      }
+      if (!fillHandled && paint.type === 'GRADIENT_RADIAL' && (paint as any).gradientStops) {
+        const grad = paint as GradientPaint;
+        const stops = grad.gradientStops;
+        const stopStrs = stops.map((s: ColorStop) => `${gradientStopHex(s)} ${Math.round(s.position * 100)}%`).join(',');
+        classes.push(`bg-[radial-gradient(circle,${stopStrs})]`);
+        fillHandled = true;
         break;
       }
     }
@@ -1942,21 +2232,55 @@ function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
   if ('strokes' in node && Array.isArray(node.strokes) && node.strokes.length > 0) {
     const stroke = (node.strokes as ReadonlyArray<Paint>)[0];
     if (stroke && stroke.type === 'SOLID' && stroke.visible !== false) {
-      const sw = typeof (node as any).strokeWeight === 'number' ? (node as any).strokeWeight : 1;
-      if (sw === 1) {
-        classes.push('border');
+      // Check for individual stroke weights
+      const nodeAny = node as any;
+      const hasIndividualStrokes = typeof nodeAny.strokeTopWeight === 'number' &&
+        (nodeAny.strokeTopWeight !== nodeAny.strokeBottomWeight ||
+         nodeAny.strokeTopWeight !== nodeAny.strokeLeftWeight ||
+         nodeAny.strokeTopWeight !== nodeAny.strokeRightWeight);
+      if (hasIndividualStrokes) {
+        if (nodeAny.strokeTopWeight > 0) classes.push(nodeAny.strokeTopWeight === 1 ? 'border-t' : `border-t-${nodeAny.strokeTopWeight}`);
+        if (nodeAny.strokeRightWeight > 0) classes.push(nodeAny.strokeRightWeight === 1 ? 'border-r' : `border-r-${nodeAny.strokeRightWeight}`);
+        if (nodeAny.strokeBottomWeight > 0) classes.push(nodeAny.strokeBottomWeight === 1 ? 'border-b' : `border-b-${nodeAny.strokeBottomWeight}`);
+        if (nodeAny.strokeLeftWeight > 0) classes.push(nodeAny.strokeLeftWeight === 1 ? 'border-l' : `border-l-${nodeAny.strokeLeftWeight}`);
       } else {
-        classes.push(`border-${sw}`);
+        const sw = typeof nodeAny.strokeWeight === 'number' ? nodeAny.strokeWeight : 1;
+        if (sw === 1) classes.push('border');
+        else classes.push(`border-${sw}`);
       }
       const hex = rgbaToHex(stroke.color.r, stroke.color.g, stroke.color.b, stroke.opacity !== undefined ? stroke.opacity : 1);
       classes.push(`border-${hexToTailwindColor(hex)}`);
     }
   }
 
-  // Border radius
+  // Dash pattern (border style)
+  if ('dashPattern' in node) {
+    const dp = (node as any).dashPattern;
+    if (Array.isArray(dp) && dp.length > 0) {
+      classes.push('border-dashed');
+    }
+  }
+
+  // Border radius (with individual corner support)
   if ('cornerRadius' in node) {
     const r = (node as any).cornerRadius;
-    if (typeof r === 'number' && r > 0) {
+    if (r === figma.mixed) {
+      const nodeAny = node as any;
+      const tl = typeof nodeAny.topLeftRadius === 'number' ? nodeAny.topLeftRadius : 0;
+      const tr = typeof nodeAny.topRightRadius === 'number' ? nodeAny.topRightRadius : 0;
+      const br = typeof nodeAny.bottomRightRadius === 'number' ? nodeAny.bottomRightRadius : 0;
+      const bl = typeof nodeAny.bottomLeftRadius === 'number' ? nodeAny.bottomLeftRadius : 0;
+      const radiusToClass = (px: number): string => {
+        if (px >= 500) return 'full';
+        const closest = TW_RADIUS_SCALE.filter(s => s.name !== 'full')
+          .reduce((best, s) => Math.abs(s.px - px) < Math.abs(best.px - px) ? s : best);
+        return Math.abs(closest.px - px) <= 1 ? closest.name : `[${px}px]`;
+      };
+      if (tl > 0) classes.push(`rounded-tl-${radiusToClass(tl)}`);
+      if (tr > 0) classes.push(`rounded-tr-${radiusToClass(tr)}`);
+      if (br > 0) classes.push(`rounded-br-${radiusToClass(br)}`);
+      if (bl > 0) classes.push(`rounded-bl-${radiusToClass(bl)}`);
+    } else if (typeof r === 'number' && r > 0) {
       if (r >= 500) {
         classes.push('rounded-full');
       } else {
@@ -1974,48 +2298,104 @@ function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
   // Typography
   if (node.type === 'TEXT') {
     const textNode = node as TextNode;
-    const fontSize = typeof textNode.fontSize === 'number' ? textNode.fontSize : null;
-    if (fontSize) {
-      const rem = fontSize / 16;
+    // Resolve fontSize — may be figma.mixed for multi-style text
+    var resolvedFontSize: number | null = null;
+    if (typeof textNode.fontSize === 'number') {
+      resolvedFontSize = textNode.fontSize;
+    } else if (textNode.characters.length > 0) {
+      try { resolvedFontSize = textNode.getRangeFontSize(0, 1) as number; } catch (e) {}
+    }
+    if (resolvedFontSize) {
+      const rem = resolvedFontSize / 16;
       const closest = TW_TEXT_SCALE.reduce((best, s) => Math.abs(s.rem - rem) < Math.abs(best.rem - rem) ? s : best);
       if (Math.abs(closest.rem - rem) < 0.05) {
         classes.push(`text-${closest.name}`);
       } else {
-        classes.push(`text-[${fontSize}px]`);
+        classes.push(`text-[${resolvedFontSize}px]`);
       }
     }
 
+    // Resolve fontName — may be figma.mixed
+    var resolvedFontName: FontName | null = null;
+    if (typeof textNode.fontName === 'object' && 'family' in textNode.fontName) {
+      resolvedFontName = textNode.fontName as FontName;
+    } else if (textNode.characters.length > 0) {
+      try { resolvedFontName = textNode.getRangeFontName(0, 1) as FontName; } catch (e) {}
+    }
+
+    // Font family
+    if (resolvedFontName) {
+      const family = resolvedFontName.family;
+      classes.push(`font-['${family.replace(/'/g, "\\'").replace(/\s+/g, '_')}']`);
+    }
+
     // Font weight
-    if (typeof textNode.fontName === 'object' && 'style' in textNode.fontName) {
-      const weight = fontStyleToWeight(textNode.fontName.style);
+    if (resolvedFontName) {
+      const weight = fontStyleToWeight(resolvedFontName.style);
       if (weight !== 400) {
         const wName = TW_WEIGHT_MAP[weight] || `[${weight}]`;
         classes.push(`font-${wName}`);
       }
     }
 
-    // Line height
+    // Line height — may be figma.mixed
+    var resolvedLineHeight: { value: number; unit: string } | null = null;
     if (typeof textNode.lineHeight === 'object' && 'value' in textNode.lineHeight) {
-      const lhObj = textNode.lineHeight as { value: number; unit: string };
-      if (lhObj.unit === 'PIXELS' && fontSize) {
-        const ratio = lhObj.value / fontSize;
-        const closest = TW_LEADING_SCALE.reduce((best, s) => Math.abs(s.val - ratio) < Math.abs(best.val - ratio) ? s : best);
-        if (Math.abs(closest.val - ratio) < 0.1) {
-          classes.push(`leading-${closest.name}`);
-        }
+      resolvedLineHeight = textNode.lineHeight as { value: number; unit: string };
+    } else if (textNode.characters.length > 0) {
+      try {
+        var lhRange = textNode.getRangeLineHeight(0, 1) as any;
+        if (lhRange && typeof lhRange === 'object' && 'value' in lhRange) resolvedLineHeight = lhRange;
+      } catch (e) {}
+    }
+    if (resolvedLineHeight && resolvedLineHeight.unit === 'PIXELS' && resolvedFontSize) {
+      const ratio = resolvedLineHeight.value / resolvedFontSize;
+      const closest = TW_LEADING_SCALE.reduce((best, s) => Math.abs(s.val - ratio) < Math.abs(best.val - ratio) ? s : best);
+      if (Math.abs(closest.val - ratio) < 0.1) {
+        classes.push(`leading-${closest.name}`);
       }
     }
 
-    // Letter spacing
+    // Letter spacing — may be figma.mixed
+    var resolvedLetterSpacing: { value: number } | null = null;
     if (typeof textNode.letterSpacing === 'object' && 'value' in textNode.letterSpacing) {
-      const ls = (textNode.letterSpacing as any).value;
-      if (typeof ls === 'number' && Math.abs(ls) > 0.1) {
-        if (ls < -0.3) classes.push('tracking-tighter');
-        else if (ls < 0) classes.push('tracking-tight');
-        else if (ls > 0.5) classes.push('tracking-wider');
-        else if (ls > 0.2) classes.push('tracking-wide');
-      }
+      resolvedLetterSpacing = textNode.letterSpacing as { value: number };
+    } else if (textNode.characters.length > 0) {
+      try {
+        var lsRange = textNode.getRangeLetterSpacing(0, 1) as any;
+        if (lsRange && typeof lsRange === 'object' && 'value' in lsRange) resolvedLetterSpacing = lsRange;
+      } catch (e) {}
     }
+    if (resolvedLetterSpacing && typeof resolvedLetterSpacing.value === 'number' && Math.abs(resolvedLetterSpacing.value) > 0.1) {
+      const ls = resolvedLetterSpacing.value;
+      if (ls < -0.3) classes.push('tracking-tighter');
+      else if (ls < 0) classes.push('tracking-tight');
+      else if (ls > 0.5) classes.push('tracking-wider');
+      else if (ls > 0.2) classes.push('tracking-wide');
+    }
+
+    // Text decoration — may be figma.mixed
+    var resolvedDecoration: string | null = null;
+    var rawDec = (textNode as any).textDecoration;
+    if (typeof rawDec === 'string') {
+      resolvedDecoration = rawDec;
+    } else if (textNode.characters.length > 0) {
+      try { resolvedDecoration = (textNode as any).getRangeTextDecoration(0, 1) as string; } catch (e) {}
+    }
+    if (resolvedDecoration === 'UNDERLINE') classes.push('underline');
+    else if (resolvedDecoration === 'STRIKETHROUGH') classes.push('line-through');
+
+    // Text case — may be figma.mixed
+    var resolvedCase: string | null = null;
+    var rawCase = (textNode as any).textCase;
+    if (typeof rawCase === 'string') {
+      resolvedCase = rawCase;
+    } else if (textNode.characters.length > 0) {
+      try { resolvedCase = (textNode as any).getRangeTextCase(0, 1) as string; } catch (e) {}
+    }
+    if (resolvedCase === 'UPPER') classes.push('uppercase');
+    else if (resolvedCase === 'LOWER') classes.push('lowercase');
+    else if (resolvedCase === 'TITLE') classes.push('capitalize');
 
     // Text alignment
     if (textNode.textAlignHorizontal === 'CENTER') classes.push('text-center');
@@ -2028,17 +2408,96 @@ function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
     classes.push(`opacity-${op}`);
   }
 
-  // Shadow
+  // Rotation
+  if ('rotation' in node && typeof (node as any).rotation === 'number' && Math.abs((node as any).rotation) > 0.1) {
+    const deg = Math.round(-(node as any).rotation); // Negate: Figma uses counter-clockwise
+    classes.push(`rotate-[${deg}deg]`);
+  }
+
+  // Blend mode
+  if ('blendMode' in node && typeof (node as any).blendMode === 'string') {
+    const blendClass = BLEND_MODE_MAP[(node as any).blendMode];
+    if (blendClass) classes.push(blendClass);
+  }
+
+  // Min/Max constraints
+  if (isFrame) {
+    const nodeAny = node as any;
+    if (typeof nodeAny.minWidth === 'number' && nodeAny.minWidth > 0) classes.push(`min-w-[${Math.round(nodeAny.minWidth)}px]`);
+    if (typeof nodeAny.maxWidth === 'number' && nodeAny.maxWidth > 0 && nodeAny.maxWidth < 10000) classes.push(`max-w-[${Math.round(nodeAny.maxWidth)}px]`);
+    if (typeof nodeAny.minHeight === 'number' && nodeAny.minHeight > 0) classes.push(`min-h-[${Math.round(nodeAny.minHeight)}px]`);
+    if (typeof nodeAny.maxHeight === 'number' && nodeAny.maxHeight > 0 && nodeAny.maxHeight < 10000) classes.push(`max-h-[${Math.round(nodeAny.maxHeight)}px]`);
+  }
+
+  // Auto-layout child sizing
+  if (parentIsAutoLayout) {
+    const nodeAny = node as any;
+    if (typeof nodeAny.layoutSizingHorizontal === 'string' && nodeAny.layoutSizingHorizontal === 'FILL') {
+      if (!classes.includes('flex-1') && !classes.includes('self-stretch')) classes.push('w-full');
+    }
+    if (typeof nodeAny.layoutSizingVertical === 'string' && nodeAny.layoutSizingVertical === 'FILL') {
+      if (!classes.includes('flex-1')) classes.push('h-full');
+    }
+  }
+
+  // Effects: Shadow, Inner Shadow, Blur
   if ('effects' in node && Array.isArray(node.effects)) {
+    let dropShadowHandled = false;
     for (const effect of node.effects as ReadonlyArray<Effect>) {
-      if (effect.type === 'DROP_SHADOW' && effect.visible !== false) {
+      if (effect.visible === false) continue;
+      if (effect.type === 'DROP_SHADOW' && !dropShadowHandled) {
         const shadow = effect as DropShadowEffect;
         if (shadow.radius <= 3) classes.push('shadow-sm');
         else if (shadow.radius <= 8) classes.push('shadow');
         else if (shadow.radius <= 16) classes.push('shadow-md');
         else if (shadow.radius <= 25) classes.push('shadow-lg');
         else classes.push('shadow-xl');
-        break;
+        // Shadow color (if not default black)
+        const sc = shadow.color;
+        if (sc && (sc.r > 0.05 || sc.g > 0.05 || sc.b > 0.05)) {
+          const shadowHex = rgbaToHex(sc.r, sc.g, sc.b, sc.a !== undefined ? sc.a : 1);
+          classes.push(`shadow-[${shadowHex}]`);
+        }
+        dropShadowHandled = true;
+      }
+      if (effect.type === 'INNER_SHADOW') {
+        const inner = effect as any;
+        const x = Math.round(inner.offset && inner.offset.x || 0);
+        const y = Math.round(inner.offset && inner.offset.y || 0);
+        const blur = Math.round(inner.radius || 0);
+        const col = inner.color ? rgbaToHex(inner.color.r, inner.color.g, inner.color.b, inner.color.a !== undefined ? inner.color.a : 1) : '#00000040';
+        classes.push(`shadow-[inset_${x}px_${y}px_${blur}px_${col}]`);
+      }
+      if (effect.type === 'LAYER_BLUR') {
+        const blur = Math.round((effect as any).radius || 0);
+        if (blur > 0) classes.push(`blur-[${blur}px]`);
+      }
+      if (effect.type === 'BACKGROUND_BLUR') {
+        const blur = Math.round((effect as any).radius || 0);
+        if (blur > 0) classes.push(`backdrop-blur-[${blur}px]`);
+      }
+    }
+  }
+
+  // Counter axis spacing (wrap gap)
+  if (isFrame) {
+    const frame = node as FrameNode;
+    if ((frame as any).layoutWrap === 'WRAP') {
+      const counterSpacing = (frame as any).counterAxisSpacing;
+      if (typeof counterSpacing === 'number' && counterSpacing > 0 && typeof frame.itemSpacing === 'number' && frame.itemSpacing > 0) {
+        if (counterSpacing !== frame.itemSpacing) {
+          const gapIdx = classes.findIndex(c => c.startsWith('gap-') && !c.startsWith('gap-x-') && !c.startsWith('gap-y-'));
+          if (gapIdx !== -1) {
+            classes.splice(gapIdx, 1);
+            if (frame.layoutMode === 'HORIZONTAL') {
+              classes.push(`gap-x-${pxToTailwindSpacing(frame.itemSpacing)}`);
+              classes.push(`gap-y-${pxToTailwindSpacing(counterSpacing)}`);
+            } else {
+              classes.push(`gap-y-${pxToTailwindSpacing(frame.itemSpacing)}`);
+              classes.push(`gap-x-${pxToTailwindSpacing(counterSpacing)}`);
+            }
+          }
+        }
       }
     }
   }
@@ -2060,10 +2519,202 @@ function chooseHTMLTag(node: SceneNode, isTopLevel: boolean): string {
   return 'div';
 }
 
+// ─── Semantic HTML5 Detection ───
+
+interface SemanticResult {
+  tag: string;
+  extraClasses: string[];
+  selfClosing: boolean;
+  attrs: string;       // extra attributes like href="#"
+  wrapChildren: string | null;  // if set, wrap each child in this tag (e.g. 'li')
+}
+
+const SEMANTIC_NAME_RULES: { pattern: RegExp; tag: string; extraClasses: string[]; selfClosing?: boolean; attrs?: string }[] = [
+  { pattern: /\b(button|btn|cta)\b/i, tag: 'button', extraClasses: ['cursor-pointer'] },
+  { pattern: /\b(link|anchor)\b/i, tag: 'a', extraClasses: [], attrs: 'href="#"' },
+  { pattern: /\b(nav|navbar|navigation|menu)\b/i, tag: 'nav', extraClasses: [] },
+  { pattern: /\b(header|topbar|app-bar)\b/i, tag: 'header', extraClasses: [] },
+  { pattern: /\b(footer|bottom-bar)\b/i, tag: 'footer', extraClasses: [] },
+  { pattern: /^main\b/i, tag: 'main', extraClasses: [] },
+  { pattern: /\b(sidebar|aside|drawer)\b/i, tag: 'aside', extraClasses: [] },
+  { pattern: /\b(input|text-field|textfield|search-bar)\b/i, tag: 'input', extraClasses: ['outline-none'], selfClosing: true },
+  { pattern: /\blabel\b/i, tag: 'label', extraClasses: [] },
+  { pattern: /\b(divider|separator)\b/i, tag: 'hr', extraClasses: [], selfClosing: true },
+  { pattern: /\b(badge|tag|chip)\b/i, tag: 'span', extraClasses: [] },
+  { pattern: /\bradio\b/i, tag: 'input', extraClasses: [], selfClosing: true, attrs: 'type="radio"' },
+  { pattern: /\b(checkbox|check)\b/i, tag: 'input', extraClasses: [], selfClosing: true, attrs: 'type="checkbox"' },
+];
+
+function detectSemanticElement(node: SceneNode, isTopLevel: boolean): SemanticResult {
+  const name = (node.name || '').toLowerCase();
+  const defaultResult: SemanticResult = { tag: 'div', extraClasses: [], selfClosing: false, attrs: '', wrapChildren: null };
+
+  // TEXT nodes: use font-size based heading detection
+  if (node.type === 'TEXT') {
+    const textNode = node as TextNode;
+    const fontSize = typeof textNode.fontSize === 'number' ? textNode.fontSize : 16;
+    let tag = 'p';
+    if (fontSize >= 32) tag = 'h1';
+    else if (fontSize >= 24) tag = 'h2';
+    else if (fontSize >= 20) tag = 'h3';
+    else if (fontSize >= 18) tag = 'h4';
+    return { tag, extraClasses: [], selfClosing: false, attrs: '', wrapChildren: null };
+  }
+
+  // 1. Name-based detection
+  for (const rule of SEMANTIC_NAME_RULES) {
+    if (rule.pattern.test(name)) {
+      return {
+        tag: rule.tag,
+        extraClasses: [...rule.extraClasses],
+        selfClosing: !!rule.selfClosing,
+        attrs: rule.attrs || '',
+        wrapChildren: null,
+      };
+    }
+  }
+
+  // 2. Structural heuristics (frames only)
+  const isFrame = node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE';
+  if (isFrame) {
+    const frame = node as FrameNode;
+    const children = frame.children ? frame.children.filter((c: SceneNode) => c.visible !== false) : [];
+
+    // Button-like: small frame with ≤3 children, has text child, has background fill
+    if (children.length <= 3 && children.length >= 1 && node.width < 300 && node.height < 80) {
+      const hasText = children.some((c: SceneNode) => c.type === 'TEXT');
+      const hasBgFill = 'fills' in node && Array.isArray(node.fills) &&
+        (node.fills as ReadonlyArray<Paint>).some(p => p.type === 'SOLID' && p.visible !== false);
+      if (hasText && hasBgFill) {
+        return { tag: 'button', extraClasses: ['cursor-pointer'], selfClosing: false, attrs: '', wrapChildren: null };
+      }
+    }
+
+    // List-like: auto-layout with ≥3 children of similar type/size
+    if (frame.layoutMode && frame.layoutMode !== 'NONE' && children.length >= 3) {
+      const types = children.map((c: SceneNode) => c.type);
+      const allSameType = types.every(t => t === types[0]);
+      if (allSameType) {
+        const heights = children.map((c: SceneNode) => Math.round(c.height));
+        const avgH = heights.reduce((s, h) => s + h, 0) / heights.length;
+        const similar = heights.every(h => Math.abs(h - avgH) < avgH * 0.3);
+        if (similar) {
+          return { tag: 'ul', extraClasses: ['list-none'], selfClosing: false, attrs: '', wrapChildren: 'li' };
+        }
+      }
+    }
+  }
+
+  // Separator-like: rectangle/line with one thin dimension
+  if (node.type === 'RECTANGLE') {
+    const w = node.width;
+    const h = node.height;
+    if ((h < 3 && w > 30) || (w < 3 && h > 30)) {
+      return { tag: 'hr', extraClasses: [], selfClosing: true, attrs: '', wrapChildren: null };
+    }
+  }
+
+  // Fallback
+  if (isTopLevel) defaultResult.tag = 'section';
+  return defaultResult;
+}
+
 function getTextContent(node: TextNode): string {
   const chars = node.characters || '';
   // Escape HTML entities
   return chars.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ─── Composite image helpers ───
+
+function isVectorLike(node: SceneNode): boolean {
+  return node.type === 'VECTOR' || node.type === 'ELLIPSE'
+      || node.type === 'LINE' || node.type === 'STAR'
+      || node.type === 'POLYGON' || node.type === 'BOOLEAN_OPERATION';
+}
+
+const COMPOSITE_NAME_RE = /\b(logo|icon|symbol|glyph|emblem|crest|insignia|mark)\b/i;
+
+function shouldExportAsCompositeImage(node: SceneNode): boolean {
+  if (!('children' in node)) return false;
+  const children = (node as any).children as readonly SceneNode[];
+  if (!children || children.length === 0) return false;
+
+  const visibleChildren = children.filter((c: SceneNode) => c.visible !== false);
+  if (visibleChildren.length === 0) return false;
+
+  // Criteria 1: name matches common icon/logo keywords
+  const nameMatch = COMPOSITE_NAME_RE.test(node.name);
+
+  // Criteria 2: all visible children are vector-like
+  const allVector = visibleChildren.every((c: SceneNode) => isVectorLike(c));
+
+  if (allVector) return true;
+  if (nameMatch && visibleChildren.every((c: SceneNode) => isVectorLike(c) || isVectorContainer(c))) return true;
+
+  // Criteria 3: nested vector group — children are vector-like or containers of vectors (one level)
+  if (node.type === 'GROUP') {
+    const allVectorOrContainers = visibleChildren.every((c: SceneNode) => {
+      if (isVectorLike(c)) return true;
+      return isVectorContainer(c);
+    });
+    if (allVectorOrContainers && !allVector) return true;
+  }
+
+  return false;
+}
+
+function isVectorContainer(node: SceneNode): boolean {
+  if (!('children' in node)) return false;
+  const children = (node as any).children as readonly SceneNode[];
+  if (!children || children.length === 0) return false;
+  const visible = children.filter((c: SceneNode) => c.visible !== false);
+  return visible.length > 0 && visible.every((c: SceneNode) => isVectorLike(c));
+}
+
+async function exportCompositeImage(
+  node: SceneNode,
+  indent: number,
+  pad: string,
+  extraClasses: string[],
+  assets: AssetMap,
+  usedFileNames: Set<string>,
+  isJSX: boolean
+): Promise<string> {
+  const name = node.name || 'icon';
+  const w = Math.round(node.width);
+  const h = Math.round(node.height);
+  const classes = ['shrink-0', `w-[${w}px]`, `h-[${h}px]`, ...extraClasses];
+  const classAttr = isJSX ? 'className' : 'class';
+  const classStr = classes.length > 0 ? ` ${classAttr}="${classes.join(' ')}"` : '';
+  const altText = name.replace(/"/g, '&quot;');
+  const id = nextAssetId();
+
+  // Try SVG first, fall back to PNG
+  try {
+    const bytes = await (node as any).exportAsync({ format: 'SVG' });
+    assets[id] = {
+      base64: uint8ToBase64(bytes),
+      mimeType: 'image/svg+xml',
+      fileName: toAssetFileName(name, 'svg', usedFileNames),
+    };
+  } catch (e) {
+    try {
+      const bytes = await (node as any).exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: 2 } });
+      assets[id] = {
+        base64: uint8ToBase64(bytes),
+        mimeType: 'image/png',
+        fileName: toAssetFileName(name, 'png', usedFileNames),
+      };
+    } catch (e2) {
+      return `${pad}<!-- ${name} -->\n`;
+    }
+  }
+
+  if (isJSX) {
+    return `${pad}<img${classStr} src="{{asset:${id}}}" alt="${altText}" width={${w}} height={${h}} />\n`;
+  }
+  return `${pad}<img${classStr} src="{{asset:${id}}}" alt="${altText}" width="${w}" height="${h}" />\n`;
 }
 
 function hasImageFill(node: SceneNode): boolean {
@@ -2073,6 +2724,46 @@ function hasImageFill(node: SceneNode): boolean {
     }
   }
   return false;
+}
+
+function getImageFillScaleMode(node: SceneNode): string | null {
+  if ('fills' in node && Array.isArray(node.fills)) {
+    for (const paint of node.fills as ReadonlyArray<Paint>) {
+      if (paint.type === 'IMAGE' && paint.visible !== false) {
+        return (paint as any).scaleMode || null;
+      }
+    }
+  }
+  return null;
+}
+
+function getImageClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
+  const cls: string[] = ['max-w-full'];
+  const scaleMode = getImageFillScaleMode(node);
+  if (scaleMode === 'FILL' || scaleMode === 'CROP') {
+    cls.push('object-cover');
+  } else if (scaleMode === 'FIT') {
+    cls.push('object-contain');
+  }
+  // Height: auto unless fixed constraints
+  const hasFixedHeight = !parentIsAutoLayout && node.height > 0;
+  if (!hasFixedHeight) {
+    cls.push('h-auto');
+  }
+  // Width in auto-layout
+  if (parentIsAutoLayout) {
+    const parent = (node as any).parent;
+    if (parent && Math.abs(node.width - parent.width) < 2) {
+      cls.push('w-full');
+    } else {
+      cls.push('shrink-0', `w-[${Math.round(node.width)}px]`);
+    }
+  }
+  return cls;
+}
+
+function getVectorImgClasses(): string[] {
+  return ['shrink-0'];
 }
 
 async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, assets: AssetMap, usedFileNames: Set<string>): Promise<string> {
@@ -2087,6 +2778,8 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
 
   // Image fills -> <img> with exported asset
   if (hasImageFill(node)) {
+    const imgClasses = [...classes, ...getImageClasses(node, parentIsAutoLayout)];
+    const imgClassStr = imgClasses.length > 0 ? ` class="${imgClasses.join(' ')}"` : '';
     const name = node.name || 'image';
     const id = nextAssetId();
     try {
@@ -2097,20 +2790,26 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
         fileName: toAssetFileName(name, 'png', usedFileNames),
       };
     } catch (e) {
-      return `${pad}<img${classStr} src="/placeholder.svg" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+      return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${name.replace(/"/g, '&quot;')}" />\n`;
     }
-    return `${pad}<img${classStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    return `${pad}<img${imgClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" />\n`;
   }
+
+  // Detect semantic element for the current node
+  const semantic = detectSemanticElement(node, isTopLevel);
+  const allClasses = [...classes, ...semantic.extraClasses];
 
   // Text node
   if (node.type === 'TEXT') {
-    const tag = chooseHTMLTag(node, false);
+    const tag = semantic.tag;
     const text = getTextContent(node as TextNode);
-    return `${pad}<${tag}${classStr}>${text}</${tag}>\n`;
+    const finalClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+    return `${pad}<${tag}${finalClassStr}>${text}</${tag}>\n`;
   }
 
   // Vector/ellipse/line -> export as SVG
   if (node.type === 'VECTOR' || node.type === 'ELLIPSE' || node.type === 'LINE' || node.type === 'STAR' || node.type === 'POLYGON') {
+    const vecClasses = [...allClasses, ...getVectorImgClasses()];
     const name = node.name || 'icon';
     const id = nextAssetId();
     try {
@@ -2122,19 +2821,28 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
       };
       const w = Math.round(node.width);
       const h = Math.round(node.height);
-      return `${pad}<img${classStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" width="${w}" height="${h}" />\n`;
+      const vecClassStr = vecClasses.length > 0 ? ` class="${vecClasses.join(' ')}"` : '';
+      return `${pad}<img${vecClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" width="${w}" height="${h}" />\n`;
     } catch (e) {
       return `${pad}<!-- ${name} -->\n`;
     }
   }
 
-  // Rectangle without children -> div
+  // Rectangle/LINE -> check for separator, otherwise div
   if (node.type === 'RECTANGLE') {
-    return `${pad}<div${classStr}></div>\n`;
+    if (semantic.selfClosing) {
+      const hrClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+      return `${pad}<${semantic.tag}${hrClassStr} />\n`;
+    }
+    const finalClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+    return `${pad}<div${finalClassStr}></div>\n`;
   }
 
   // GROUP -> unwrap children
   if (node.type === 'GROUP') {
+    if (shouldExportAsCompositeImage(node)) {
+      return await exportCompositeImage(node, indent, pad, [], assets, usedFileNames, false);
+    }
     const group = node as GroupNode;
     let html = '';
     for (const child of group.children) {
@@ -2143,42 +2851,57 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
     return html;
   }
 
-  // Frame/Component/Instance -> container
+  // Frame/Component/Instance -> container with semantic tag
   if (node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE') {
+    if (shouldExportAsCompositeImage(node)) {
+      return await exportCompositeImage(node, indent, pad, allClasses, assets, usedFileNames, false);
+    }
     const frame = node as FrameNode;
-    const tag = chooseHTMLTag(node, isTopLevel);
+    const tag = semantic.tag;
     const isAutoLayout = frame.layoutMode && frame.layoutMode !== 'NONE';
     const isOverlap = !isAutoLayout && frame.children.length > 0 && inferLayoutFromChildren(frame) === 'overlap';
 
+    // Self-closing semantic tags (input, hr)
+    if (semantic.selfClosing) {
+      const scClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+      const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
+      return `${pad}<${tag}${scClassStr}${attrStr} />\n`;
+    }
+
     let html = '';
-    // Component comment
     if (node.type === 'COMPONENT' || node.type === 'INSTANCE') {
       html += `${pad}<!-- ${node.name} -->\n`;
     }
 
-    html += `${pad}<${tag}${classStr}>\n`;
+    const finalClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+    const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
+    html += `${pad}<${tag}${finalClassStr}${attrStr}>\n`;
 
     for (const child of frame.children) {
       if (child.visible === false) continue;
-      // For overlap layout, add absolute positioning to children
       if (isOverlap) {
         const childClasses = nodeToClasses(child, false);
         childClasses.push('absolute');
-        // Position based on x/y relative to frame
         const top = Math.round(child.y);
         const left = Math.round(child.x);
         if (top > 0) childClasses.push(`top-${pxToTailwindSpacing(top)}`);
         if (left > 0) childClasses.push(`left-${pxToTailwindSpacing(left)}`);
-        // Special handling: render with overridden classes
         if (child.type === 'TEXT') {
-          const childTag = chooseHTMLTag(child, false);
+          const childSemantic = detectSemanticElement(child, false);
           const text = getTextContent(child as TextNode);
-          html += `${pad}  <${childTag} class="${childClasses.join(' ')}">${text}</${childTag}>\n`;
+          html += `${pad}  <${childSemantic.tag} class="${childClasses.join(' ')}">${text}</${childSemantic.tag}>\n`;
         } else {
           html += await generateLayerHTML(child, indent + 1, false, false, assets, usedFileNames);
         }
       } else {
-        html += await generateLayerHTML(child, indent + 1, false, !!isAutoLayout, assets, usedFileNames);
+        // Wrap children in <li> if parent is <ul>
+        if (semantic.wrapChildren) {
+          html += `${pad}  <${semantic.wrapChildren}>\n`;
+          html += await generateLayerHTML(child, indent + 2, false, !!isAutoLayout, assets, usedFileNames);
+          html += `${pad}  </${semantic.wrapChildren}>\n`;
+        } else {
+          html += await generateLayerHTML(child, indent + 1, false, !!isAutoLayout, assets, usedFileNames);
+        }
       }
     }
 
@@ -2187,7 +2910,8 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
   }
 
   // Fallback
-  return `${pad}<div${classStr}></div>\n`;
+  const fallbackClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+  return `${pad}<div${fallbackClassStr}></div>\n`;
 }
 
 // ─── Design Lint ───
@@ -2274,6 +2998,375 @@ function lintTokens(tokens: ScannedTokens): LintWarning[] {
   }
 
   return warnings;
+}
+
+// ─── React/JSX + shadcn/ui Support ───
+
+interface ShadcnComponent {
+  name: string;
+  importPath: string;
+  subComponents?: string[];
+}
+
+const SHADCN_NAME_RULES: { pattern: RegExp; component: ShadcnComponent }[] = [
+  { pattern: /\b(button|btn|cta)\b/i, component: { name: 'Button', importPath: '@/components/ui/button' } },
+  { pattern: /\bcard\b/i, component: { name: 'Card', importPath: '@/components/ui/card', subComponents: ['CardHeader', 'CardContent', 'CardFooter'] } },
+  { pattern: /\b(input|text-field|textfield|search-bar)\b/i, component: { name: 'Input', importPath: '@/components/ui/input' } },
+  { pattern: /\b(badge|tag|chip)\b/i, component: { name: 'Badge', importPath: '@/components/ui/badge' } },
+  { pattern: /\bavatar\b/i, component: { name: 'Avatar', importPath: '@/components/ui/avatar', subComponents: ['AvatarImage', 'AvatarFallback'] } },
+  { pattern: /\b(divider|separator)\b/i, component: { name: 'Separator', importPath: '@/components/ui/separator' } },
+  { pattern: /\b(switch|toggle)\b/i, component: { name: 'Switch', importPath: '@/components/ui/switch' } },
+  { pattern: /\b(checkbox|check)\b/i, component: { name: 'Checkbox', importPath: '@/components/ui/checkbox' } },
+  { pattern: /\bradio\b/i, component: { name: 'RadioGroup', importPath: '@/components/ui/radio-group', subComponents: ['RadioGroupItem'] } },
+  { pattern: /\b(select|dropdown)\b/i, component: { name: 'Select', importPath: '@/components/ui/select', subComponents: ['SelectTrigger', 'SelectContent', 'SelectItem'] } },
+  { pattern: /\b(dialog|modal)\b/i, component: { name: 'Dialog', importPath: '@/components/ui/dialog', subComponents: ['DialogTrigger', 'DialogContent'] } },
+  { pattern: /\btabs\b/i, component: { name: 'Tabs', importPath: '@/components/ui/tabs', subComponents: ['TabsList', 'TabsTrigger', 'TabsContent'] } },
+];
+
+function detectShadcnComponent(node: SceneNode, semanticTag: string): ShadcnComponent | null {
+  const name = (node.name || '').toLowerCase();
+  // Name-based match
+  for (const rule of SHADCN_NAME_RULES) {
+    if (rule.pattern.test(name)) {
+      return rule.component;
+    }
+  }
+  // Tag-based fallback: button or input detected semantically
+  if (semanticTag === 'button') {
+    return { name: 'Button', importPath: '@/components/ui/button' };
+  }
+  if (semanticTag === 'input') {
+    return { name: 'Input', importPath: '@/components/ui/input' };
+  }
+  return null;
+}
+
+class ImportCollector {
+  private imports: Map<string, Set<string>> = new Map(); // path -> set of component names
+
+  add(component: ShadcnComponent) {
+    if (!this.imports.has(component.importPath)) {
+      this.imports.set(component.importPath, new Set());
+    }
+    this.imports.get(component.importPath)!.add(component.name);
+  }
+
+  generate(): string {
+    if (this.imports.size === 0) return '';
+    const lines: string[] = [];
+    for (const [path, names] of this.imports) {
+      const sorted = Array.from(names).sort();
+      lines.push(`import { ${sorted.join(', ')} } from "${path}"`);
+    }
+    return lines.join('\n') + '\n';
+  }
+}
+
+function htmlToJSX(html: string): string {
+  // Convert class= to className=
+  return html.replace(/\bclass="/g, 'className="');
+}
+
+// JSX-aware layer HTML generation (wraps standard generation + transforms)
+async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, assets: AssetMap, usedFileNames: Set<string>, importCollector: ImportCollector): Promise<string> {
+  if (indent > 10) return '';
+  if (node.visible === false) return '';
+
+  const pad = '  '.repeat(indent);
+  const classes = nodeToClasses(node, parentIsAutoLayout);
+  const semantic = detectSemanticElement(node, isTopLevel);
+  const allClasses = [...classes, ...semantic.extraClasses];
+
+  // Check for shadcn component
+  const shadcn = detectShadcnComponent(node, semantic.tag);
+
+  // Image fills
+  if (hasImageFill(node)) {
+    const imgClasses = [...allClasses, ...getImageClasses(node, parentIsAutoLayout)];
+    const imgClassStr = imgClasses.length > 0 ? ` className="${imgClasses.join(' ')}"` : '';
+    const name = node.name || 'image';
+    const id = nextAssetId();
+    try {
+      const bytes = await (node as any).exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: 2 } });
+      assets[id] = {
+        base64: uint8ToBase64(bytes),
+        mimeType: 'image/png',
+        fileName: toAssetFileName(name, 'png', usedFileNames),
+      };
+    } catch (e) {
+      return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    }
+    return `${pad}<img${imgClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+  }
+
+  // Text node
+  if (node.type === 'TEXT') {
+    const tag = semantic.tag;
+    const text = getTextContent(node as TextNode);
+    const finalClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+    return `${pad}<${tag}${finalClassStr}>${text}</${tag}>\n`;
+  }
+
+  // Vector/icon
+  if (node.type === 'VECTOR' || node.type === 'ELLIPSE' || node.type === 'LINE' || node.type === 'STAR' || node.type === 'POLYGON') {
+    const vecClasses = [...allClasses, ...getVectorImgClasses()];
+    const name = node.name || 'icon';
+    const id = nextAssetId();
+    try {
+      const bytes = await (node as any).exportAsync({ format: 'SVG' });
+      assets[id] = {
+        base64: uint8ToBase64(bytes),
+        mimeType: 'image/svg+xml',
+        fileName: toAssetFileName(name, 'svg', usedFileNames),
+      };
+      const w = Math.round(node.width);
+      const h = Math.round(node.height);
+      const vecClassStr = vecClasses.length > 0 ? ` className="${vecClasses.join(' ')}"` : '';
+      return `${pad}<img${vecClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" width={${w}} height={${h}} />\n`;
+    } catch (e) {
+      return `${pad}{/* ${name} */}\n`;
+    }
+  }
+
+  // Rectangle/LINE
+  if (node.type === 'RECTANGLE') {
+    if (shadcn) {
+      importCollector.add(shadcn);
+      const scClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+      return `${pad}<${shadcn.name}${scClassStr} />\n`;
+    }
+    if (semantic.selfClosing) {
+      const hrClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+      return `${pad}<${semantic.tag}${hrClassStr} />\n`;
+    }
+    const finalClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+    return `${pad}<div${finalClassStr}></div>\n`;
+  }
+
+  // GROUP
+  if (node.type === 'GROUP') {
+    if (shouldExportAsCompositeImage(node)) {
+      return await exportCompositeImage(node, indent, pad, [], assets, usedFileNames, true);
+    }
+    const group = node as GroupNode;
+    let html = '';
+    for (const child of group.children) {
+      html += await generateLayerJSX(child, indent, false, false, assets, usedFileNames, importCollector);
+    }
+    return html;
+  }
+
+  // Frame/Component/Instance
+  if (node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE') {
+    if (shouldExportAsCompositeImage(node)) {
+      return await exportCompositeImage(node, indent, pad, allClasses, assets, usedFileNames, true);
+    }
+    const frame = node as FrameNode;
+    const isAutoLayout = frame.layoutMode && frame.layoutMode !== 'NONE';
+    const isOverlap = !isAutoLayout && frame.children.length > 0 && inferLayoutFromChildren(frame) === 'overlap';
+
+    // Determine tag: shadcn component name or semantic tag
+    let tag = semantic.tag;
+    if (shadcn) {
+      importCollector.add(shadcn);
+      tag = shadcn.name;
+    }
+
+    // Self-closing
+    if (semantic.selfClosing) {
+      const scClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+      const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
+      return `${pad}<${tag}${scClassStr}${attrStr} />\n`;
+    }
+
+    let html = '';
+    if (node.type === 'COMPONENT' || node.type === 'INSTANCE') {
+      html += `${pad}{/* ${node.name} */}\n`;
+    }
+
+    const finalClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+    const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
+    html += `${pad}<${tag}${finalClassStr}${attrStr}>\n`;
+
+    for (const child of frame.children) {
+      if (child.visible === false) continue;
+      if (isOverlap) {
+        const childClasses = nodeToClasses(child, false);
+        childClasses.push('absolute');
+        const top = Math.round(child.y);
+        const left = Math.round(child.x);
+        if (top > 0) childClasses.push(`top-${pxToTailwindSpacing(top)}`);
+        if (left > 0) childClasses.push(`left-${pxToTailwindSpacing(left)}`);
+        if (child.type === 'TEXT') {
+          const childSemantic = detectSemanticElement(child, false);
+          const text = getTextContent(child as TextNode);
+          html += `${pad}  <${childSemantic.tag} className="${childClasses.join(' ')}">${text}</${childSemantic.tag}>\n`;
+        } else {
+          html += await generateLayerJSX(child, indent + 1, false, false, assets, usedFileNames, importCollector);
+        }
+      } else {
+        if (semantic.wrapChildren) {
+          html += `${pad}  <${semantic.wrapChildren}>\n`;
+          html += await generateLayerJSX(child, indent + 2, false, !!isAutoLayout, assets, usedFileNames, importCollector);
+          html += `${pad}  </${semantic.wrapChildren}>\n`;
+        } else {
+          html += await generateLayerJSX(child, indent + 1, false, !!isAutoLayout, assets, usedFileNames, importCollector);
+        }
+      }
+    }
+
+    html += `${pad}</${tag}>\n`;
+    return html;
+  }
+
+  const fallbackClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+  return `${pad}<div${fallbackClassStr}></div>\n`;
+}
+
+// JSX-aware layer HTML generation with registry
+async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, registry: TokenRegistry, assets: AssetMap, usedFileNames: Set<string>, importCollector: ImportCollector): Promise<string> {
+  if (indent > 10) return '';
+  if (node.visible === false) return '';
+
+  const pad = '  '.repeat(indent);
+  const classes = nodeToClassesWithRegistry(node, parentIsAutoLayout, registry);
+  const semantic = detectSemanticElement(node, isTopLevel);
+  const allClasses = [...classes, ...semantic.extraClasses];
+  const shadcn = detectShadcnComponent(node, semantic.tag);
+
+  // Image fills
+  if (hasImageFill(node)) {
+    const imgClasses = [...allClasses, ...getImageClasses(node, parentIsAutoLayout)];
+    const imgClassStr = imgClasses.length > 0 ? ` className="${imgClasses.join(' ')}"` : '';
+    const name = node.name || 'image';
+    const id = nextAssetId();
+    try {
+      const bytes = await (node as any).exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: 2 } });
+      assets[id] = {
+        base64: uint8ToBase64(bytes),
+        mimeType: 'image/png',
+        fileName: toAssetFileName(name, 'png', usedFileNames),
+      };
+    } catch (e) {
+      return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    }
+    return `${pad}<img${imgClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+  }
+
+  if (node.type === 'TEXT') {
+    const tag = semantic.tag;
+    const text = getTextContent(node as TextNode);
+    const finalClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+    return `${pad}<${tag}${finalClassStr}>${text}</${tag}>\n`;
+  }
+
+  if (node.type === 'VECTOR' || node.type === 'ELLIPSE' || node.type === 'LINE' || node.type === 'STAR' || node.type === 'POLYGON') {
+    const vecClasses = [...allClasses, ...getVectorImgClasses()];
+    const name = node.name || 'icon';
+    const id = nextAssetId();
+    try {
+      const bytes = await (node as any).exportAsync({ format: 'SVG' });
+      assets[id] = {
+        base64: uint8ToBase64(bytes),
+        mimeType: 'image/svg+xml',
+        fileName: toAssetFileName(name, 'svg', usedFileNames),
+      };
+      const w = Math.round(node.width);
+      const h = Math.round(node.height);
+      const vecClassStr = vecClasses.length > 0 ? ` className="${vecClasses.join(' ')}"` : '';
+      return `${pad}<img${vecClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" width={${w}} height={${h}} />\n`;
+    } catch (e) {
+      return `${pad}{/* ${name} */}\n`;
+    }
+  }
+
+  if (node.type === 'RECTANGLE') {
+    if (shadcn) {
+      importCollector.add(shadcn);
+      const scClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+      return `${pad}<${shadcn.name}${scClassStr} />\n`;
+    }
+    if (semantic.selfClosing) {
+      const hrClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+      return `${pad}<${semantic.tag}${hrClassStr} />\n`;
+    }
+    const finalClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+    return `${pad}<div${finalClassStr}></div>\n`;
+  }
+
+  if (node.type === 'GROUP') {
+    if (shouldExportAsCompositeImage(node)) {
+      return await exportCompositeImage(node, indent, pad, [], assets, usedFileNames, true);
+    }
+    const group = node as GroupNode;
+    let html = '';
+    for (const child of group.children) {
+      html += await generateLayerJSXWithRegistry(child, indent, false, false, registry, assets, usedFileNames, importCollector);
+    }
+    return html;
+  }
+
+  if (node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE') {
+    if (shouldExportAsCompositeImage(node)) {
+      return await exportCompositeImage(node, indent, pad, allClasses, assets, usedFileNames, true);
+    }
+    const frame = node as FrameNode;
+    const isAutoLayout = frame.layoutMode && frame.layoutMode !== 'NONE';
+    const isOverlap = !isAutoLayout && frame.children.length > 0 && inferLayoutFromChildren(frame) === 'overlap';
+
+    let tag = semantic.tag;
+    if (shadcn) {
+      importCollector.add(shadcn);
+      tag = shadcn.name;
+    }
+
+    if (semantic.selfClosing) {
+      const scClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+      const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
+      return `${pad}<${tag}${scClassStr}${attrStr} />\n`;
+    }
+
+    let html = '';
+    if (node.type === 'COMPONENT' || node.type === 'INSTANCE') {
+      html += `${pad}{/* ${node.name} */}\n`;
+    }
+    const finalClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+    const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
+    html += `${pad}<${tag}${finalClassStr}${attrStr}>\n`;
+
+    for (const child of frame.children) {
+      if (child.visible === false) continue;
+      if (isOverlap) {
+        const childClasses = nodeToClassesWithRegistry(child, false, registry);
+        childClasses.push('absolute');
+        const top = Math.round(child.y);
+        const left = Math.round(child.x);
+        if (top > 0) childClasses.push(`top-${registerSpacing(registry, top)}`);
+        if (left > 0) childClasses.push(`left-${registerSpacing(registry, left)}`);
+        if (child.type === 'TEXT') {
+          const childSemantic = detectSemanticElement(child, false);
+          const text = getTextContent(child as TextNode);
+          html += `${pad}  <${childSemantic.tag} className="${childClasses.join(' ')}">${text}</${childSemantic.tag}>\n`;
+        } else {
+          html += await generateLayerJSXWithRegistry(child, indent + 1, false, false, registry, assets, usedFileNames, importCollector);
+        }
+      } else {
+        if (semantic.wrapChildren) {
+          html += `${pad}  <${semantic.wrapChildren}>\n`;
+          html += await generateLayerJSXWithRegistry(child, indent + 2, false, !!isAutoLayout, registry, assets, usedFileNames, importCollector);
+          html += `${pad}  </${semantic.wrapChildren}>\n`;
+        } else {
+          html += await generateLayerJSXWithRegistry(child, indent + 1, false, !!isAutoLayout, registry, assets, usedFileNames, importCollector);
+        }
+      }
+    }
+
+    html += `${pad}</${tag}>\n`;
+    return html;
+  }
+
+  const fallbackClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+  return `${pad}<div${fallbackClassStr}></div>\n`;
 }
 
 // Cache for re-generation when options change
@@ -2466,6 +3559,7 @@ figma.ui.onmessage = async function(msg) {
     }
     const node = selection[0];
     const generateCSS = msg.generateCSS === true;
+    const jsxMode = msg.jsxMode === true;
 
     // Reset asset counter for each generation run
     assetCounter = 0;
@@ -2476,7 +3570,21 @@ figma.ui.onmessage = async function(msg) {
     let css: string | undefined;
 
     try {
-      if (generateCSS) {
+      if (jsxMode) {
+        const importCollector = new ImportCollector();
+        if (generateCSS) {
+          const registry = createTokenRegistry();
+          html = await generateLayerJSXWithRegistry(node, 0, true, false, registry, assets, usedFileNames, importCollector);
+          css = buildThemeCSS(registry);
+        } else {
+          html = await generateLayerJSX(node, 0, true, false, assets, usedFileNames, importCollector);
+        }
+        // Prepend imports
+        const imports = importCollector.generate();
+        if (imports) {
+          html = imports + '\n' + html;
+        }
+      } else if (generateCSS) {
         const registry = createTokenRegistry();
         html = await generateLayerHTMLWithRegistry(node, 0, true, false, registry, assets, usedFileNames);
         css = buildThemeCSS(registry);
@@ -2484,12 +3592,24 @@ figma.ui.onmessage = async function(msg) {
         html = await generateLayerHTML(node, 0, true, false, assets, usedFileNames);
       }
 
+      // Extract font families from generated HTML for preview font loading
+      var fontFamilies: string[] = [];
+      var fontRegex = /font-\['([^']+)'\]/g;
+      var fontMatch: RegExpExecArray | null;
+      var fontSet = new Set<string>();
+      while ((fontMatch = fontRegex.exec(html)) !== null) {
+        fontSet.add(fontMatch[1].replace(/_/g, ' '));
+      }
+      fontFamilies = Array.from(fontSet);
+
       figma.ui.postMessage({
         type: 'layer-generated',
         html: html,
         css: css,
+        jsxMode: jsxMode,
         assets: Object.keys(assets).length > 0 ? assets : undefined,
-        nodeInfo: { name: node.name, width: Math.round(node.width), height: Math.round(node.height) }
+        nodeInfo: { name: node.name, width: Math.round(node.width), height: Math.round(node.height) },
+        fontFamilies: fontFamilies.length > 0 ? fontFamilies : undefined,
       });
     } catch (error) {
       figma.ui.postMessage({
@@ -2513,7 +3633,9 @@ figma.ui.onmessage = async function(msg) {
       figma.ui.postMessage({ type: 'lint-results', warnings: [], error: error instanceof Error ? error.message : 'Lint failed' });
     }
   } else if (msg.type === 'resize-for-preview') {
-    figma.ui.resize(900, 700);
+    const screenW = Math.max(figma.viewport.bounds.width * figma.viewport.zoom, 900);
+    const screenH = Math.max(figma.viewport.bounds.height * figma.viewport.zoom, 700);
+    figma.ui.resize(Math.min(Math.round(screenW), 2000), Math.min(Math.round(screenH), 1200));
   } else if (msg.type === 'resize-restore') {
     figma.ui.resize(420, 700);
   } else if (msg.type === 'close') {

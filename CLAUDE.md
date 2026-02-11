@@ -40,3 +40,5 @@ Data flows: Plugin load → auto-extract variables/styles → generate `@theme` 
 - **Webpack**: Dual entry points (`code` and `ui`), uses ts-loader and html-webpack-plugin to inline UI script into `ui.html`
 - **manifest.json**: Figma plugin manifest pointing to `dist/code.js` and `dist/ui.html`, no network access required
 - **No runtime dependencies** — all packages are devDependencies (TypeScript, Webpack, Figma plugin typings)
+
+- **Always provide commit comments**: After completing any task, always write out ready-to-use commit message(s) for the work done. Don't wait to be asked — include them automatically at the end of the task.

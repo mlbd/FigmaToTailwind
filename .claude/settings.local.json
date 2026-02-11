@@ -5,7 +5,9 @@
       "Bash(npm run build:*)",
       "WebSearch",
       "WebFetch(domain:www.npmjs.com)",
-      "WebFetch(domain:cdn.jsdelivr.net)"
+      "WebFetch(domain:cdn.jsdelivr.net)",
+      "Bash(npx tsc:*)",
+      "Bash(grep:*)"
     ]
   }
 }

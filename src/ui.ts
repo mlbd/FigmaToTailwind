@@ -25,6 +25,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentLayerHTML = '';
   let currentLayerCSS = '';
   let currentAssets: AssetMap = {};
+  let currentFontFamilies: string[] = [];
   let previousCSS = '';
   let lintAborted = false;
 
@@ -66,6 +67,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const lintStopBtn = document.getElementById('lint-stop-btn') as HTMLButtonElement;
 
   // Layer CSS elements
+  const layerJSXToggle = document.getElementById('layer-jsx-mode') as HTMLInputElement;
   const layerCSSToggle = document.getElementById('layer-css-toggle') as HTMLInputElement;
   const layerCSSSection = document.getElementById('layer-css-section') as HTMLDivElement;
   const layerCSSPreview = document.getElementById('layer-css-preview') as HTMLElement;
@@ -202,6 +204,33 @@ document.addEventListener("DOMContentLoaded", () => {
           '<span class="syn-attr">$1</span>$2$3<span class="syn-attr-value">$4</span>$5');
         // Highlight comments
         result = result.replace(/(&lt;!--)(.*?)(--&gt;)/g,
+          '<span class="syn-comment">$1$2$3</span>');
+        return result;
+      })
+      .join('\n');
+  }
+
+  function highlightJSX(raw: string): string {
+    return raw
+      .split('\n')
+      .map(line => {
+        let result = escapeHtml(line);
+        // Highlight import statements
+        if (/^\s*import\s/.test(line)) {
+          result = result.replace(/^(\s*)(import)/, '$1<span class="syn-at">$2</span>');
+          result = result.replace(/(from\s+)(&quot;.*?&quot;)/g, '<span class="syn-at">$1</span><span class="syn-value">$2</span>');
+          return result;
+        }
+        // Highlight JSX tags (including PascalCase components)
+        result = result.replace(/(&lt;\/?)([\w]+)/g, '$1<span class="syn-tag">$2</span>');
+        // Highlight className and other attributes
+        result = result.replace(/([\w]+)(=)(&quot;)(.*?)(&quot;)/g,
+          '<span class="syn-attr">$1</span>$2$3<span class="syn-attr-value">$4</span>$5');
+        // Highlight JSX expression attributes like width={100}
+        result = result.replace(/([\w]+)(=)(\{)(.*?)(\})/g,
+          '<span class="syn-attr">$1</span>$2$3<span class="syn-value">$4</span>$5');
+        // Highlight JSX comments
+        result = result.replace(/(\{\/\*)(.*?)(\*\/\})/g,
           '<span class="syn-comment">$1$2$3</span>');
         return result;
       })
@@ -584,7 +613,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       currentLayerHTML = msg.html;
       currentAssets = msg.assets || {};
-      layerPreview.innerHTML = highlightHTML(msg.html);
+      currentFontFamilies = msg.fontFamilies || [];
+      layerPreview.innerHTML = msg.jsxMode ? highlightJSX(msg.html) : highlightHTML(msg.html);
       if (msg.nodeInfo) {
         layerNodeName.textContent = msg.nodeInfo.name;
         layerNodeSize.textContent = `${msg.nodeInfo.width} x ${msg.nodeInfo.height}`;
@@ -692,12 +722,20 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function wrapInFullHTML(bodyHTML: string, css: string): string {
+    // Build Google Fonts link for exports too
+    let fontLink = '';
+    if (currentFontFamilies.length > 0) {
+      const fontParams = currentFontFamilies
+        .map(f => 'family=' + encodeURIComponent(f) + ':wght@100;200;300;400;500;600;700;800;900')
+        .join('&');
+      fontLink = `\n  <link rel="preconnect" href="https://fonts.googleapis.com">\n  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n  <link href="https://fonts.googleapis.com/css2?${fontParams}&display=swap" rel="stylesheet">`;
+    }
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Component</title>
+  <title>Component</title>${fontLink}
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"><\/script>
   <style type="text/tailwindcss">
 @import "tailwindcss";
@@ -747,6 +785,17 @@ ${bodyHTML}
     // Resolve asset placeholders with data URIs for inline preview
     const resolvedHTML = resolveAssetPlaceholders(html, currentAssets, 'preview');
 
+    // Build Google Fonts link for any custom fonts used
+    let fontLink = '';
+    if (currentFontFamilies.length > 0) {
+      const fontParams = currentFontFamilies
+        .map(f => 'family=' + encodeURIComponent(f) + ':wght@100;200;300;400;500;600;700;800;900')
+        .join('&');
+      fontLink = `<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?${fontParams}&display=swap" rel="stylesheet">`;
+    }
+
     // Build the srcdoc: full HTML page with Tailwind v4 browser + @theme CSS + generated HTML
     // @tailwindcss/browser is a global script that auto-processes <style type="text/tailwindcss">
     const srcdoc = `<!DOCTYPE html>
@@ -754,6 +803,7 @@ ${bodyHTML}
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+${fontLink}
 <style type="text/tailwindcss">
 @import "tailwindcss";
 
@@ -859,7 +909,8 @@ ${resolvedHTML}
       generateLayerText.textContent = 'Generating...';
 
       const generateCSS = layerCSSToggle ? layerCSSToggle.checked : false;
-      parent.postMessage({ pluginMessage: { type: 'generate-layer', generateCSS } }, '*');
+      const jsxMode = layerJSXToggle ? layerJSXToggle.checked : false;
+      parent.postMessage({ pluginMessage: { type: 'generate-layer', generateCSS, jsxMode } }, '*');
     });
   }
 
@@ -872,7 +923,8 @@ ${resolvedHTML}
         ? resolveAssetPlaceholders(currentLayerHTML, currentAssets, 'export')
         : currentLayerHTML;
       copyToClipboard(resolved);
-      showToast('Copied HTML to clipboard');
+      const isJSX = layerJSXToggle && layerJSXToggle.checked;
+      showToast(isJSX ? 'Copied JSX to clipboard' : 'Copied HTML to clipboard');
     });
   }
 
