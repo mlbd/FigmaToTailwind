@@ -1813,6 +1813,85 @@ const BLEND_MODE_MAP: Record<string, string> = {
   'LUMINOSITY': 'mix-blend-luminosity',
 };
 
+function getVisibleChildrenInRenderOrder(
+  node: SceneNode & ChildrenMixin,
+  isAutoLayout: boolean,
+  isOverlap: boolean
+): SceneNode[] {
+  const visible = node.children.filter((child: SceneNode) => child.visible !== false);
+  if (visible.length <= 1 || isAutoLayout || isOverlap) return visible;
+  const avgHeight = visible.reduce((sum: number, child: SceneNode) => sum + child.height, 0) / visible.length;
+  const sameRowThreshold = Math.max(8, avgHeight * 0.25);
+  return visible
+    .slice()
+    .sort((a: SceneNode, b: SceneNode) => {
+      const dy = Math.abs(a.y - b.y);
+      if (dy <= sameRowThreshold) return a.x - b.x;
+      return a.y - b.y;
+    });
+}
+
+function getCenteredContainerMaxWidth(frame: FrameNode, isTopLevel?: boolean): number | null {
+  const pl = typeof frame.paddingLeft === 'number' ? frame.paddingLeft : 0;
+  const pr = typeof frame.paddingRight === 'number' ? frame.paddingRight : 0;
+  const insetDiff = Math.abs(pl - pr);
+  const symmetricalHorizontalPadding = pl >= 16 && pr >= 16 && insetDiff <= 2;
+  if (!symmetricalHorizontalPadding) return null;
+
+  const width = Math.round(frame.width);
+  if (width < 900) return null;
+  const innerWidth = width - pl - pr;
+  if (innerWidth < 320 || innerWidth >= width) return null;
+
+  const parent = (frame as any).parent as SceneNode | undefined;
+  if (!isTopLevel && parent && typeof parent.width === 'number' && parent.width > 0) {
+    const ratio = width / parent.width;
+    if (ratio < 0.85) return null;
+  }
+
+  const frameAny = frame as any;
+  if (typeof frameAny.maxWidth === 'number' && frameAny.maxWidth > 0 && frameAny.maxWidth < 10000) {
+    return null;
+  }
+
+  const visibleChildren = frame.children.filter((child: SceneNode) => child.visible !== false);
+  if (visibleChildren.length === 0) return null;
+
+  return Math.round(innerWidth);
+}
+
+function getListItemWrapperClasses(
+  child: SceneNode,
+  parentIsAutoLayout: boolean,
+  parentIsWrap?: boolean,
+  parentWidth?: number,
+  parentGap?: number
+): string[] {
+  const classes: string[] = [];
+  if (!parentIsAutoLayout) return classes;
+
+  const childAny = child as any;
+  if (childAny.layoutGrow === 1 || childAny.layoutSizingHorizontal === 'FILL') {
+    classes.push('flex-1', 'basis-0', 'min-w-0');
+  }
+
+  if (parentIsWrap && child.width > 0 && parentWidth && parentWidth > 0) {
+    const gap = parentGap || 0;
+    const childW = Math.round(child.width);
+    const cols = Math.max(1, Math.round((parentWidth + gap) / (childW + gap)));
+    if (cols >= 2) {
+      if (cols === 2) classes.push('w-[calc(50%-' + Math.round(gap / 2) + 'px)]');
+      else if (cols === 3) classes.push('w-[calc(33.333%-' + Math.round(gap * 2 / 3) + 'px)]');
+      else if (cols === 4) classes.push('w-[calc(25%-' + Math.round(gap * 3 / 4) + 'px)]');
+      else classes.push('w-[calc(' + (100 / cols).toFixed(3) + '%-' + Math.round(gap * (cols - 1) / cols) + 'px)]');
+    } else {
+      classes.push('w-full');
+    }
+  }
+
+  return Array.from(new Set(classes));
+}
+
 // Modified nodeToClasses that uses a registry when provided
 function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean, registry: TokenRegistry, parentIsWrap?: boolean, parentWidth?: number, parentGap?: number, isTopLevel?: boolean): string[] {
   const classes: string[] = [];
@@ -1850,7 +1929,8 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
         }
         if ((frame as any).layoutWrap === 'WRAP') classes.push('flex-wrap');
       }
-      if (typeof frame.itemSpacing === 'number' && frame.itemSpacing > 0) {
+      const skipGapForSpaceBetween = layoutMode !== 'GRID' && frame.primaryAxisAlignItems === 'SPACE_BETWEEN';
+      if (typeof frame.itemSpacing === 'number' && frame.itemSpacing > 0 && !skipGapForSpaceBetween) {
         const name = registerSpacing(registry, frame.itemSpacing);
         classes.push(`gap-${name}`);
       }
@@ -1887,6 +1967,12 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
       }
     }
     if (frame.clipsContent && !isTopLevel) classes.push('overflow-hidden');
+
+    const centeredContainerWidth = getCenteredContainerMaxWidth(frame, isTopLevel);
+    if (centeredContainerWidth !== null) {
+      classes.push('mx-auto');
+      classes.push(`max-w-[${centeredContainerWidth}px]`);
+    }
   }
 
   // Size
@@ -2295,7 +2381,8 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
     const group = node as GroupNode;
     const groupClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
     let html = `${pad}<div${groupClassStr}>\n`;
-    for (const child of group.children) {
+    const orderedGroupChildren = getVisibleChildrenInRenderOrder(group, false, false);
+    for (const child of orderedGroupChildren) {
       html += await generateLayerHTMLWithRegistry(child, indent + 1, false, false, registry, assets, usedFileNames);
     }
     html += `${pad}</div>\n`;
@@ -2332,8 +2419,8 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
     const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
     html += `${pad}<${tag}${finalClassStr}${backgroundImageAttr}${attrStr}>\n`;
 
-    for (const child of frame.children) {
-      if (child.visible === false) continue;
+    const orderedChildren = getVisibleChildrenInRenderOrder(frame, !!isAutoLayout, isOverlap);
+    for (const child of orderedChildren) {
       if (isOverlap) {
         const childClasses = nodeToClassesWithRegistry(child, false, registry);
         childClasses.push('absolute');
@@ -2353,7 +2440,9 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
         }
       } else {
         if (semantic.wrapChildren) {
-          html += `${pad}  <${semantic.wrapChildren}>\n`;
+          const liClasses = getListItemWrapperClasses(child, !!isAutoLayout, isWrap, frameInnerWidth, frameGap);
+          const liClassStr = liClasses.length > 0 ? ` class="${liClasses.join(' ')}"` : '';
+          html += `${pad}  <${semantic.wrapChildren}${liClassStr}>\n`;
           html += await generateLayerHTMLWithRegistry(child, indent + 2, false, !!isAutoLayout, registry, assets, usedFileNames, isWrap, frameInnerWidth, frameGap);
           html += `${pad}  </${semantic.wrapChildren}>\n`;
         } else {
@@ -2448,7 +2537,8 @@ function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean, parentIsWra
       }
 
       // Gap
-      if (typeof frame.itemSpacing === 'number' && frame.itemSpacing > 0) {
+      const skipGapForSpaceBetween = layoutMode !== 'GRID' && frame.primaryAxisAlignItems === 'SPACE_BETWEEN';
+      if (typeof frame.itemSpacing === 'number' && frame.itemSpacing > 0 && !skipGapForSpaceBetween) {
         classes.push(`gap-${pxToTailwindSpacing(frame.itemSpacing)}`);
       }
       if (layoutMode === 'GRID') {
@@ -2493,6 +2583,12 @@ function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean, parentIsWra
     // Clip content
     if (frame.clipsContent && !isTopLevel) {
       classes.push('overflow-hidden');
+    }
+
+    const centeredContainerWidth = getCenteredContainerMaxWidth(frame, isTopLevel);
+    if (centeredContainerWidth !== null) {
+      classes.push('mx-auto');
+      classes.push(`max-w-[${centeredContainerWidth}px]`);
     }
   }
 
@@ -3276,7 +3372,8 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
     const group = node as GroupNode;
     const groupClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
     let html = `${pad}<div${groupClassStr}>\n`;
-    for (const child of group.children) {
+    const orderedGroupChildren = getVisibleChildrenInRenderOrder(group, false, false);
+    for (const child of orderedGroupChildren) {
       html += await generateLayerHTML(child, indent + 1, false, false, assets, usedFileNames);
     }
     html += `${pad}</div>\n`;
@@ -3316,8 +3413,8 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
     const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
     html += `${pad}<${tag}${finalClassStr}${backgroundImageAttr}${attrStr}>\n`;
 
-    for (const child of frame.children) {
-      if (child.visible === false) continue;
+    const orderedChildren = getVisibleChildrenInRenderOrder(frame, !!isAutoLayout, isOverlap);
+    for (const child of orderedChildren) {
       if (isOverlap) {
         const childClasses = nodeToClasses(child, false);
         childClasses.push('absolute');
@@ -3338,7 +3435,9 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
       } else {
         // Wrap children in <li> if parent is <ul>
         if (semantic.wrapChildren) {
-          html += `${pad}  <${semantic.wrapChildren}>\n`;
+          const liClasses = getListItemWrapperClasses(child, !!isAutoLayout, isWrap, frameInnerWidth, frameGap);
+          const liClassStr = liClasses.length > 0 ? ` class="${liClasses.join(' ')}"` : '';
+          html += `${pad}  <${semantic.wrapChildren}${liClassStr}>\n`;
           html += await generateLayerHTML(child, indent + 2, false, !!isAutoLayout, assets, usedFileNames, isWrap, frameInnerWidth, frameGap);
           html += `${pad}  </${semantic.wrapChildren}>\n`;
         } else {
@@ -3510,11 +3609,11 @@ function htmlToJSX(html: string): string {
 }
 
 // JSX-aware layer HTML generation (wraps standard generation + transforms)
-async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, assets: AssetMap, usedFileNames: Set<string>, importCollector: ImportCollector): Promise<string> {
+async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, assets: AssetMap, usedFileNames: Set<string>, importCollector: ImportCollector, parentIsWrap?: boolean, parentWidth?: number, parentGap?: number): Promise<string> {
   if (node.visible === false) return '';
 
   const pad = '  '.repeat(indent);
-  const classes = nodeToClasses(node, parentIsAutoLayout);
+  const classes = nodeToClasses(node, parentIsAutoLayout, parentIsWrap, parentWidth, parentGap, isTopLevel);
   const semantic = detectSemanticElement(node, isTopLevel);
   const allClasses = [...classes, ...semantic.extraClasses];
   let backgroundStyleAttr = '';
@@ -3593,7 +3692,8 @@ async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boo
     const group = node as GroupNode;
     const groupClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
     let html = `${pad}<div${groupClassStr}>\n`;
-    for (const child of group.children) {
+    const orderedGroupChildren = getVisibleChildrenInRenderOrder(group, false, false);
+    for (const child of orderedGroupChildren) {
       html += await generateLayerJSX(child, indent + 1, false, false, assets, usedFileNames, importCollector);
     }
     html += `${pad}</div>\n`;
@@ -3608,6 +3708,11 @@ async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boo
     const frame = node as FrameNode;
     const isAutoLayout = frame.layoutMode && frame.layoutMode !== 'NONE';
     const isOverlap = !isAutoLayout && frame.children.length > 0 && inferLayoutFromChildren(frame) === 'overlap';
+    const isWrap = isAutoLayout && (frame as any).layoutWrap === 'WRAP';
+    const frameGap = typeof frame.itemSpacing === 'number' ? frame.itemSpacing : 0;
+    const framePl = typeof frame.paddingLeft === 'number' ? frame.paddingLeft : 0;
+    const framePr = typeof frame.paddingRight === 'number' ? frame.paddingRight : 0;
+    const frameInnerWidth = Math.round(frame.width) - framePl - framePr;
 
     // Determine tag: shadcn component name or semantic tag
     let tag = semantic.tag;
@@ -3633,8 +3738,8 @@ async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boo
     const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
     html += `${pad}<${tag}${finalClassStr}${backgroundStyleAttr}${attrStr}>\n`;
 
-    for (const child of frame.children) {
-      if (child.visible === false) continue;
+    const orderedChildren = getVisibleChildrenInRenderOrder(frame, !!isAutoLayout, isOverlap);
+    for (const child of orderedChildren) {
       if (isOverlap) {
         const childClasses = nodeToClasses(child, false);
         childClasses.push('absolute');
@@ -3654,11 +3759,13 @@ async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boo
         }
       } else {
         if (semantic.wrapChildren) {
-          html += `${pad}  <${semantic.wrapChildren}>\n`;
-          html += await generateLayerJSX(child, indent + 2, false, !!isAutoLayout, assets, usedFileNames, importCollector);
+          const liClasses = getListItemWrapperClasses(child, !!isAutoLayout, isWrap, frameInnerWidth, frameGap);
+          const liClassStr = liClasses.length > 0 ? ` className="${liClasses.join(' ')}"` : '';
+          html += `${pad}  <${semantic.wrapChildren}${liClassStr}>\n`;
+          html += await generateLayerJSX(child, indent + 2, false, !!isAutoLayout, assets, usedFileNames, importCollector, isWrap, frameInnerWidth, frameGap);
           html += `${pad}  </${semantic.wrapChildren}>\n`;
         } else {
-          html += await generateLayerJSX(child, indent + 1, false, !!isAutoLayout, assets, usedFileNames, importCollector);
+          html += await generateLayerJSX(child, indent + 1, false, !!isAutoLayout, assets, usedFileNames, importCollector, isWrap, frameInnerWidth, frameGap);
         }
       }
     }
@@ -3672,11 +3779,11 @@ async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boo
 }
 
 // JSX-aware layer HTML generation with registry
-async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, registry: TokenRegistry, assets: AssetMap, usedFileNames: Set<string>, importCollector: ImportCollector): Promise<string> {
+async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, registry: TokenRegistry, assets: AssetMap, usedFileNames: Set<string>, importCollector: ImportCollector, parentIsWrap?: boolean, parentWidth?: number, parentGap?: number): Promise<string> {
   if (node.visible === false) return '';
 
   const pad = '  '.repeat(indent);
-  const classes = nodeToClassesWithRegistry(node, parentIsAutoLayout, registry);
+  const classes = nodeToClassesWithRegistry(node, parentIsAutoLayout, registry, parentIsWrap, parentWidth, parentGap, isTopLevel);
   const semantic = detectSemanticElement(node, isTopLevel);
   const allClasses = [...classes, ...semantic.extraClasses];
   const shadcn = detectShadcnComponent(node, semantic.tag);
@@ -3749,7 +3856,8 @@ async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isT
     const group = node as GroupNode;
     const groupClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
     let html = `${pad}<div${groupClassStr}>\n`;
-    for (const child of group.children) {
+    const orderedGroupChildren = getVisibleChildrenInRenderOrder(group, false, false);
+    for (const child of orderedGroupChildren) {
       html += await generateLayerJSXWithRegistry(child, indent + 1, false, false, registry, assets, usedFileNames, importCollector);
     }
     html += `${pad}</div>\n`;
@@ -3763,6 +3871,11 @@ async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isT
     const frame = node as FrameNode;
     const isAutoLayout = frame.layoutMode && frame.layoutMode !== 'NONE';
     const isOverlap = !isAutoLayout && frame.children.length > 0 && inferLayoutFromChildren(frame) === 'overlap';
+    const isWrap = isAutoLayout && (frame as any).layoutWrap === 'WRAP';
+    const frameGap = typeof frame.itemSpacing === 'number' ? frame.itemSpacing : 0;
+    const framePl = typeof frame.paddingLeft === 'number' ? frame.paddingLeft : 0;
+    const framePr = typeof frame.paddingRight === 'number' ? frame.paddingRight : 0;
+    const frameInnerWidth = Math.round(frame.width) - framePl - framePr;
 
     let tag = semantic.tag;
     if (shadcn) {
@@ -3785,8 +3898,8 @@ async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isT
     const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
     html += `${pad}<${tag}${finalClassStr}${backgroundStyleAttr}${attrStr}>\n`;
 
-    for (const child of frame.children) {
-      if (child.visible === false) continue;
+    const orderedChildren = getVisibleChildrenInRenderOrder(frame, !!isAutoLayout, isOverlap);
+    for (const child of orderedChildren) {
       if (isOverlap) {
         const childClasses = nodeToClassesWithRegistry(child, false, registry);
         childClasses.push('absolute');
@@ -3806,11 +3919,13 @@ async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isT
         }
       } else {
         if (semantic.wrapChildren) {
-          html += `${pad}  <${semantic.wrapChildren}>\n`;
-          html += await generateLayerJSXWithRegistry(child, indent + 2, false, !!isAutoLayout, registry, assets, usedFileNames, importCollector);
+          const liClasses = getListItemWrapperClasses(child, !!isAutoLayout, isWrap, frameInnerWidth, frameGap);
+          const liClassStr = liClasses.length > 0 ? ` className="${liClasses.join(' ')}"` : '';
+          html += `${pad}  <${semantic.wrapChildren}${liClassStr}>\n`;
+          html += await generateLayerJSXWithRegistry(child, indent + 2, false, !!isAutoLayout, registry, assets, usedFileNames, importCollector, isWrap, frameInnerWidth, frameGap);
           html += `${pad}  </${semantic.wrapChildren}>\n`;
         } else {
-          html += await generateLayerJSXWithRegistry(child, indent + 1, false, !!isAutoLayout, registry, assets, usedFileNames, importCollector);
+          html += await generateLayerJSXWithRegistry(child, indent + 1, false, !!isAutoLayout, registry, assets, usedFileNames, importCollector, isWrap, frameInnerWidth, frameGap);
         }
       }
     }
