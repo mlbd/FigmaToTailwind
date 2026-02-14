@@ -1040,7 +1040,45 @@
       color: var(--text-primary);
     }
 
-    .live-preview-close {
+    .live-preview-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: 10px;
+      flex-shrink: 0;
+    }
+
+    .live-preview-zoom-btn {
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      transition: all var(--transition);
+    }
+
+    .live-preview-zoom-btn:hover {
+      color: var(--text-primary);
+      background: var(--surface-3);
+      border-color: var(--border-hover);
+    }
+
+    .live-preview-zoom-value {
+      min-width: 42px;
+      text-align: center;
+      font-size: 10px;
+      color: var(--text-tertiary);
+      font-weight: 600;
+    }
+
+.live-preview-close {
       width: 28px;
       height: 28px;
       display: flex;
@@ -1423,6 +1461,11 @@
     <div class="live-preview-backdrop" id="live-preview-backdrop">
       <div class="live-preview-header">
         <span class="live-preview-title">Preview: <span id="live-preview-title"></span></span>
+        <div class="live-preview-controls">
+          <button class="live-preview-zoom-btn" id="live-preview-zoom-out" title="Zoom out">-</button>
+          <span class="live-preview-zoom-value" id="live-preview-zoom-value">100%</span>
+          <button class="live-preview-zoom-btn" id="live-preview-zoom-in" title="Zoom in">+</button>
+        </div>
         <button class="live-preview-close" id="live-preview-close">&times;</button>
       </div>
       <iframe class="live-preview-frame" id="live-preview-frame" sandbox="allow-scripts"></iframe>

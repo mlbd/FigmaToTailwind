@@ -41,4 +41,4 @@ Data flows: Plugin load → auto-extract variables/styles → generate `@theme` 
 - **manifest.json**: Figma plugin manifest pointing to `dist/code.js` and `dist/ui.html`, no network access required
 - **No runtime dependencies** — all packages are devDependencies (TypeScript, Webpack, Figma plugin typings)
 
-- **Always provide commit comments**: After completing any task, always write out ready-to-use commit message(s) for the work done. Don't wait to be asked — include them automatically at the end of the task.
+- **Always provide commit comments**: After completing any task, always run `npm run build` and write out ready-to-use commit message(s) for the work done. Don't wait to be asked — include them automatically at the end of the task.

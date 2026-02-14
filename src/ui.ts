@@ -83,6 +83,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const livePreviewTitle = document.getElementById('live-preview-title') as HTMLSpanElement;
   const livePreviewClose = document.getElementById('live-preview-close') as HTMLButtonElement;
   const livePreviewFrame = document.getElementById('live-preview-frame') as HTMLIFrameElement;
+  const livePreviewZoomOut = document.getElementById('live-preview-zoom-out') as HTMLButtonElement;
+  const livePreviewZoomIn = document.getElementById('live-preview-zoom-in') as HTMLButtonElement;
+  const livePreviewZoomValue = document.getElementById('live-preview-zoom-value') as HTMLSpanElement;
 
   // Diff/output toggle elements
   const previewToggle = document.getElementById('preview-toggle') as HTMLDivElement;
@@ -776,8 +779,27 @@ ${bodyHTML}
 
   // ─── Live Preview Modal ───
 
+  let livePreviewZoom = 1;
+
+  function applyLivePreviewZoom() {
+    const zoomPct = `${Math.round(livePreviewZoom * 100)}%`;
+    if (livePreviewZoomValue) livePreviewZoomValue.textContent = zoomPct;
+
+    const doc = livePreviewFrame.contentDocument;
+    if (doc) {
+      const root = doc.getElementById('preview-root') as HTMLDivElement | null;
+      if (root) {
+        root.style.transform = `scale(${livePreviewZoom})`;
+        root.style.transformOrigin = 'top left';
+        root.style.width = `${100 / livePreviewZoom}%`;
+      }
+    }
+  }
+
   function openLivePreview(title: string, html: string, themeCSS: string) {
     livePreviewTitle.textContent = title;
+    livePreviewZoom = 1;
+    applyLivePreviewZoom();
 
     // Ask code.ts to resize plugin window for larger preview
     parent.postMessage({ pluginMessage: { type: 'resize-for-preview' } }, '*');
@@ -812,6 +834,11 @@ ${escapeStyleContent(themeCSS)}
 <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"><\/script>
 <style>
   body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  #preview-root {
+    transform-origin: top left;
+    width: 100%;
+    min-height: 100vh;
+  }
   #loading {
     display: flex; align-items: center; justify-content: center;
     height: 100vh; color: #888; font-size: 14px;
@@ -821,7 +848,7 @@ ${escapeStyleContent(themeCSS)}
 </head>
 <body>
 <div id="loading">Loading Tailwind preview...</div>
-${resolvedHTML}
+<div id="preview-root">${resolvedHTML}</div>
 <script>
   // Hide loading once Tailwind has processed styles
   var observer = new MutationObserver(function(mutations) {
@@ -863,6 +890,25 @@ ${resolvedHTML}
 
   // Close button
   livePreviewClose.addEventListener('click', closeLivePreview);
+
+  // Zoom controls
+  if (livePreviewZoomOut) {
+    livePreviewZoomOut.addEventListener('click', () => {
+      livePreviewZoom = Math.max(0.25, Math.round((livePreviewZoom - 0.1) * 100) / 100);
+      applyLivePreviewZoom();
+    });
+  }
+
+  if (livePreviewZoomIn) {
+    livePreviewZoomIn.addEventListener('click', () => {
+      livePreviewZoom = Math.min(3, Math.round((livePreviewZoom + 0.1) * 100) / 100);
+      applyLivePreviewZoom();
+    });
+  }
+
+  livePreviewFrame.addEventListener('load', () => {
+    applyLivePreviewZoom();
+  });
 
   // Escape key
   document.addEventListener('keydown', (e) => {

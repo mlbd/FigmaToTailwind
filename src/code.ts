@@ -30,7 +30,7 @@ interface ScannedTokens {
   spacing: number[];
   radii: number[];
   shadows: { type: string; offsetX: number; offsetY: number; blur: number; spread: number; color: string }[];
-  gradients: { type: 'linear' | 'radial'; angle: number; stops: { color: string; position: number }[] }[];
+  gradients: { type: 'linear' | 'radial'; angle: number; stops: { color: string; position: number }[]; ellipseX?: number; ellipseY?: number; centerX?: number; centerY?: number }[];
   animations: { duration: number; easing: string }[];
 }
 
@@ -747,16 +747,58 @@ function scanNodesForTokens(): ScannedTokens {
             color: rgbaToHex(s.color.r, s.color.g, s.color.b, s.color.a),
             position: Math.round(s.position * 100),
           }));
-          const angle = paint.type === 'GRADIENT_LINEAR'
-            ? getGradientAngle(gPaint.gradientTransform as unknown as number[][])
-            : 0;
-          const key = stops.map(s => `${s.color}-${s.position}`).join('|') + `|${angle}`;
+          let angle = 0;
+          let ellipseX: number | undefined;
+          let ellipseY: number | undefined;
+          let centerX: number | undefined;
+          let centerY: number | undefined;
+          
+          if (paint.type === 'GRADIENT_LINEAR') {
+            const handles = (gPaint as any).gradientHandlePositions as ReadonlyArray<{ x: number; y: number }> | undefined;
+            if (handles && handles.length >= 2) {
+              const start = handles[0];
+              const end = handles[1];
+              const dx = end.x - start.x;
+              const dy = end.y - start.y;
+              let rawAngle = Math.atan2(dy, dx) * (180 / Math.PI);
+              rawAngle = (rawAngle + 360) % 360;
+              angle = Math.round(((rawAngle + 90) % 360) * 100) / 100;
+            } else {
+              angle = getGradientAngle(gPaint.gradientTransform as unknown as number[][]);
+            }
+          } else {
+            const handles = (gPaint as any).gradientHandlePositions as ReadonlyArray<{ x: number; y: number }> | undefined;
+            if (handles && handles.length >= 3) {
+              const center = handles[0];
+              const h1 = handles[1];
+              const h2 = handles[2];
+              centerX = Math.round(center.x * 10000) / 100;
+              centerY = Math.round(center.y * 10000) / 100;
+              ellipseX = Math.round(Math.sqrt((h1.x - center.x) * (h1.x - center.x) + (h1.y - center.y) * (h1.y - center.y)) * 10000) / 100;
+              ellipseY = Math.round(Math.sqrt((h2.x - center.x) * (h2.x - center.x) + (h2.y - center.y) * (h2.y - center.y)) * 10000) / 100;
+            } else {
+              const params = extractRadialGradientParams(gPaint.gradientTransform as unknown as number[][]);
+              ellipseX = params.ellipseX;
+              ellipseY = params.ellipseY;
+              centerX = params.centerX;
+              centerY = params.centerY;
+            }
+          }
+          
+          const key = stops.map(s => `${s.color}-${s.position}`).join('|') + `|${angle}|${ellipseX || ''}|${ellipseY || ''}`;
           if (!gradientMap.has(key)) {
-            gradientMap.set(key, {
+            const gradientEntry: any = {
               type: paint.type === 'GRADIENT_LINEAR' ? 'linear' : 'radial',
               angle,
-              stops,
-            });
+              stops
+            };
+            if (paint.type === 'GRADIENT_RADIAL') {
+              gradientEntry.ellipseX = ellipseX;
+              gradientEntry.ellipseY = ellipseY;
+              gradientEntry.centerX = centerX;
+              gradientEntry.centerY = centerY;
+            }
+            gradientMap.set(key, gradientEntry);
           }
         }
       }
@@ -1027,7 +1069,12 @@ function generateScannedCSS(tokens: ScannedTokens, opts: GenerateOptions = DEFAU
       if (g.type === 'linear') {
         sectionCSS += `  --gradient-${i + 1}: linear-gradient(${g.angle}deg, ${stopsStr});\n`;
       } else {
-        sectionCSS += `  --gradient-${i + 1}: radial-gradient(circle, ${stopsStr});\n`;
+        // Use ellipse with proper dimensions and positioning
+        const ex = g.ellipseX != null ? g.ellipseX : 100;
+        const ey = g.ellipseY != null ? g.ellipseY : 100;
+        const cx = g.centerX != null ? g.centerX : 50;
+        const cy = g.centerY != null ? g.centerY : 50;
+        sectionCSS += `  --gradient-${i + 1}: radial-gradient(ellipse ${ex}% ${ey}% at ${cx}% ${cy}%, ${stopsStr});\n`;
       }
     }
     sections.push({ label: 'Gradients', css: sectionCSS });
@@ -1395,12 +1442,24 @@ function hexToTailwindColor(hex: string, extractedColors?: Map<string, string>):
 
 // ─── TokenRegistry for CSS variable mode ───
 
+interface GradientData {
+  type: 'linear' | 'radial';
+  angle: number;
+  stops: { color: string; position: number }[];
+  // For radial gradients
+  ellipseX?: number;  // Width percentage (e.g., 87.20)
+  ellipseY?: number;  // Height percentage (e.g., 86.02)
+  centerX?: number;   // Center X percentage (e.g., 50.00)
+  centerY?: number;   // Center Y percentage (e.g., 41.34)
+}
+
 interface TokenRegistry {
   colors: Map<string, string>;      // hex -> var name (e.g. "primary")
   fontSizes: Map<number, string>;   // px -> var name (e.g. "lg")
   spacing: Map<number, string>;     // px -> var name (e.g. "4")
   radii: Map<number, string>;       // px -> var name (e.g. "md")
   shadows: Map<string, string>;     // shadow-key -> var name
+  gradients: Map<string, GradientData>; // gradient-key -> gradient data
 }
 
 function createTokenRegistry(): TokenRegistry {
@@ -1410,6 +1469,7 @@ function createTokenRegistry(): TokenRegistry {
     spacing: new Map(),
     radii: new Map(),
     shadows: new Map(),
+    gradients: new Map(),
   };
 }
 
@@ -1488,6 +1548,102 @@ function registerRadius(registry: TokenRegistry, px: number): string {
   return name;
 }
 
+// Extract radial gradient parameters from transform matrix
+// Based on Figma's gradientTransform which maps gradient space to element space
+function extractRadialGradientParams(transform: number[][]): { ellipseX: number; ellipseY: number; centerX: number; centerY: number } {
+  if (!transform || transform.length < 2) {
+    return { ellipseX: 100, ellipseY: 100, centerX: 50, centerY: 50 };
+  }
+  
+  // Figma gradientTransform is a 2x3 affine matrix [[a, b, tx], [c, d, ty]]
+  const a = transform[0][0];
+  const b = transform[0][1];
+  const tx = transform[0][2];
+  const c = transform[1][0];
+  const d = transform[1][1];
+  const ty = transform[1][2];
+  
+  // Calculate determinant
+  const det = a * d - b * c;
+  if (Math.abs(det) < 0.0001) {
+    return { ellipseX: 100, ellipseY: 100, centerX: 50, centerY: 50 };
+  }
+  
+  // Invert the matrix to map from element space back to gradient space
+  const invA = d / det;
+  const invB = -b / det;
+  const invC = -c / det;
+  const invD = a / det;
+  const invTx = (b * ty - d * tx) / det;
+  const invTy = (c * tx - a * ty) / det;
+  
+  // The gradient center in CSS is where (0, 0) in gradient space maps to in element space
+  // Actually, Figma's radial gradient center is at (0.5, 0.5) in normalized space
+  // We need to find where (0.5, 0.5) maps to using the INVERSE transform
+  const centerX = Math.round((invA * 0.5 + invB * 0.5 + invTx) * 10000) / 100;
+  const centerY = Math.round((invC * 0.5 + invD * 0.5 + invTy) * 10000) / 100;
+  
+  // For ellipse size, calculate how much the unit circle is scaled
+  // The gradient radius in Figma is 0.5 (half the normalized space)
+  // We look at how vectors (0.5, 0) and (0, 0.5) transform
+  const vecX_x = invA * 0.5;
+  const vecX_y = invC * 0.5;
+  const vecY_x = invB * 0.5;
+  const vecY_y = invD * 0.5;
+  
+  // Calculate the actual lengths of these vectors in element space
+  const scaleX = Math.sqrt(vecX_x * vecX_x + vecX_y * vecX_y) * 2;
+  const scaleY = Math.sqrt(vecY_x * vecY_x + vecY_y * vecY_y) * 2;
+  
+  // Convert to percentages (these represent the ellipse dimensions relative to element size)
+  const ellipseX = Math.min(200, Math.round(scaleX * 10000) / 100);
+  const ellipseY = Math.min(200, Math.round(scaleY * 10000) / 100);
+  
+  return { ellipseX, ellipseY, centerX, centerY };
+}
+
+// Register a gradient and return its CSS variable name
+function registerGradient(
+  registry: TokenRegistry,
+  type: 'linear' | 'radial',
+  angle: number,
+  stops: { color: string; position: number }[],
+  ellipseX?: number,
+  ellipseY?: number,
+  centerX?: number,
+  centerY?: number
+): string {
+  // Create a unique key for this gradient
+  const stopsKey = stops.map(s => `${s.color}-${s.position}`).join('|');
+  const ellipseKey = type === 'radial' && ellipseX !== undefined ? `|${ellipseX}|${ellipseY}|${centerX}|${centerY}` : '';
+  const key = `${type}|${angle}|${stopsKey}${ellipseKey}`;
+  
+  if (registry.gradients.has(key)) {
+    // Return the name of the existing gradient
+    const index = Array.from(registry.gradients.keys()).indexOf(key) + 1;
+    return `gradient-${index}`;
+  }
+  
+  // Generate a unique name
+  const index = registry.gradients.size + 1;
+  const name = `gradient-${index}`;
+  
+  const gradientData: any = {
+    type,
+    angle,
+    stops
+  };
+  if (type === 'radial' && ellipseX !== undefined) {
+    gradientData.ellipseX = ellipseX;
+    gradientData.ellipseY = ellipseY;
+    gradientData.centerX = centerX;
+    gradientData.centerY = centerY;
+  }
+  
+  registry.gradients.set(key, gradientData);
+  return name;
+}
+
 function buildThemeCSS(registry: TokenRegistry): string {
   const lines: string[] = ['@theme {'];
 
@@ -1524,6 +1680,27 @@ function buildThemeCSS(registry: TokenRegistry): string {
     }
   }
 
+  if (registry.gradients.size > 0) {
+    lines.push('');
+    lines.push('  /* Gradients */');
+    let gradientIndex = 0;
+    for (const [key, data] of registry.gradients) {
+      gradientIndex++;
+      const name = `gradient-${gradientIndex}`;
+      const stopsStr = data.stops.map(s => `${s.color} ${s.position}%`).join(', ');
+      if (data.type === 'linear') {
+        lines.push(`  --${name}: linear-gradient(${data.angle}deg, ${stopsStr});`);
+      } else {
+        // For radial gradients, use ellipse with proper dimensions and positioning
+        const ex = data.ellipseX != null ? data.ellipseX : 100;
+        const ey = data.ellipseY != null ? data.ellipseY : 100;
+        const cx = data.centerX != null ? data.centerX : 50;
+        const cy = data.centerY != null ? data.centerY : 50;
+        lines.push(`  --${name}: radial-gradient(ellipse ${ex}% ${ey}% at ${cx}% ${cy}%, ${stopsStr});`);
+      }
+    }
+  }
+
   lines.push('}');
   return lines.join('\n');
 }
@@ -1547,9 +1724,74 @@ function gradientAngleToDirection(transform: ReadonlyArray<ReadonlyArray<number>
   return 'tr';
 }
 
-// Extract gradient stop colors as hex
+// Extract gradient stop colors - use rgba format for better CSS compatibility
 function gradientStopHex(stop: ColorStop): string {
-  return rgbaToHex(stop.color.r, stop.color.g, stop.color.b, stop.color.a !== undefined ? stop.color.a : 1);
+  const a = stop.color.a !== undefined ? stop.color.a : 1;
+  if (a < 1) {
+    // Use rgba format for colors with transparency
+    const r = Math.round(stop.color.r * 255);
+    const g = Math.round(stop.color.g * 255);
+    const b = Math.round(stop.color.b * 255);
+    return `rgba(${r}, ${g}, ${b}, ${a.toFixed(2)})`;
+  }
+  // Use hex for solid colors
+  return rgbaToHex(stop.color.r, stop.color.g, stop.color.b, 1);
+}
+
+function formatNumberForCss(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+  if (Math.round(rounded) === rounded) return String(rounded);
+  return rounded.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function gradientStopsToCss(stops: ReadonlyArray<ColorStop>): string {
+  return stops
+    .map((s: ColorStop) => `${gradientStopHex(s)} ${formatNumberForCss(s.position * 100)}%`)
+    .join(', ');
+}
+
+function linearGradientCssFromPaint(grad: GradientPaint): string {
+  const stopsStr = gradientStopsToCss(grad.gradientStops);
+  let cssAngle = getGradientAngle(grad.gradientTransform as unknown as number[][]);
+  const handles = (grad as any).gradientHandlePositions as ReadonlyArray<{ x: number; y: number }> | undefined;
+  if (handles && handles.length >= 2) {
+    const start = handles[0];
+    const end = handles[1];
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    let angle = Math.atan2(dy, dx) * (180 / Math.PI);
+    angle = (angle + 360) % 360;
+    cssAngle = (angle + 90) % 360;
+  }
+  return `linear-gradient(${formatNumberForCss(cssAngle)}deg, ${stopsStr})`;
+}
+
+function radialGradientCssFromPaint(grad: GradientPaint): string {
+  const stopsStr = gradientStopsToCss(grad.gradientStops);
+  const handles = (grad as any).gradientHandlePositions as ReadonlyArray<{ x: number; y: number }> | undefined;
+  if (handles && handles.length >= 3) {
+    const center = handles[0];
+    const h1 = handles[1];
+    const h2 = handles[2];
+    const cx = center.x * 100;
+    const cy = center.y * 100;
+    const rx = Math.sqrt((h1.x - center.x) * (h1.x - center.x) + (h1.y - center.y) * (h1.y - center.y)) * 100;
+    const ry = Math.sqrt((h2.x - center.x) * (h2.x - center.x) + (h2.y - center.y) * (h2.y - center.y)) * 100;
+    return `radial-gradient(ellipse ${formatNumberForCss(rx)}% ${formatNumberForCss(ry)}% at ${formatNumberForCss(cx)}% ${formatNumberForCss(cy)}%, ${stopsStr})`;
+  }
+  return `radial-gradient(circle, ${stopsStr})`;
+}
+
+function gradientPaintToTailwindBgClass(grad: GradientPaint): string {
+  let css = '';
+  if (grad.type === 'GRADIENT_LINEAR') {
+    css = linearGradientCssFromPaint(grad);
+  } else if (grad.type === 'GRADIENT_RADIAL') {
+    css = radialGradientCssFromPaint(grad);
+  } else {
+    css = linearGradientCssFromPaint(grad);
+  }
+  return `bg-[${css.replace(/\s+/g, '_')}]`;
 }
 
 // Blend mode to Tailwind class mapping
@@ -1572,7 +1814,7 @@ const BLEND_MODE_MAP: Record<string, string> = {
 };
 
 // Modified nodeToClasses that uses a registry when provided
-function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean, registry: TokenRegistry): string[] {
+function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean, registry: TokenRegistry, parentIsWrap?: boolean, parentWidth?: number, parentGap?: number, isTopLevel?: boolean): string[] {
   const classes: string[] = [];
   if (node.visible === false) return classes;
 
@@ -1580,23 +1822,44 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
 
   if (isFrame) {
     const frame = node as FrameNode;
-    if (frame.layoutMode && frame.layoutMode !== 'NONE') {
-      classes.push('flex');
-      if (frame.layoutMode === 'VERTICAL') classes.push('flex-col');
-      switch (frame.primaryAxisAlignItems) {
-        case 'CENTER': classes.push('justify-center'); break;
-        case 'MAX': classes.push('justify-end'); break;
-        case 'SPACE_BETWEEN': classes.push('justify-between'); break;
-      }
-      switch (frame.counterAxisAlignItems) {
-        case 'CENTER': classes.push('items-center'); break;
-        case 'MAX': classes.push('items-end'); break;
+    const layoutMode = (frame as any).layoutMode as string;
+    if (layoutMode && layoutMode !== 'NONE') {
+      if (layoutMode === 'GRID') {
+        classes.push('grid');
+        const gridCols = (frame as any).gridColumnCount;
+        const gridRows = (frame as any).gridRowCount;
+        if (typeof gridCols === 'number' && gridCols > 0) {
+          if (gridCols <= 12) classes.push(`grid-cols-${gridCols}`);
+          else classes.push(`grid-cols-[repeat(${gridCols},minmax(0,1fr))]`);
+        }
+        if (typeof gridRows === 'number' && gridRows > 0) {
+          if (gridRows <= 12) classes.push(`grid-rows-${gridRows}`);
+          else classes.push(`grid-rows-[repeat(${gridRows},minmax(0,1fr))]`);
+        }
+      } else {
+        classes.push('flex');
+        if (layoutMode === 'VERTICAL') classes.push('flex-col');
+        switch (frame.primaryAxisAlignItems) {
+          case 'CENTER': classes.push('justify-center'); break;
+          case 'MAX': classes.push('justify-end'); break;
+          case 'SPACE_BETWEEN': classes.push('justify-between'); break;
+        }
+        switch (frame.counterAxisAlignItems) {
+          case 'CENTER': classes.push('items-center'); break;
+          case 'MAX': classes.push('items-end'); break;
+        }
+        if ((frame as any).layoutWrap === 'WRAP') classes.push('flex-wrap');
       }
       if (typeof frame.itemSpacing === 'number' && frame.itemSpacing > 0) {
         const name = registerSpacing(registry, frame.itemSpacing);
         classes.push(`gap-${name}`);
       }
-      if ((frame as any).layoutWrap === 'WRAP') classes.push('flex-wrap');
+      if (layoutMode === 'GRID') {
+        const counterSpacing = (frame as any).counterAxisSpacing;
+        if (typeof counterSpacing === 'number' && counterSpacing > 0 && typeof frame.itemSpacing === 'number' && frame.itemSpacing > 0 && counterSpacing !== frame.itemSpacing) {
+          classes.push(`gap-y-${registerSpacing(registry, counterSpacing)}`);
+        }
+      }
     } else {
       if (frame.children && frame.children.length > 0) {
         const layout = inferLayoutFromChildren(frame);
@@ -1623,11 +1886,14 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
         if (pl > 0) classes.push(`pl-${registerSpacing(registry, pl)}`);
       }
     }
-    if (frame.clipsContent) classes.push('overflow-hidden');
+    if (frame.clipsContent && !isTopLevel) classes.push('overflow-hidden');
   }
 
   // Size
-  if (!parentIsAutoLayout) {
+  if (isTopLevel) {
+    // Top-level element: use w-full, no fixed height — let content determine height
+    classes.push('w-full');
+  } else if (!parentIsAutoLayout) {
     if (node.width > 0) {
       const name = registerSpacing(registry, Math.round(node.width));
       classes.push(`w-${name}`);
@@ -1637,11 +1903,42 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
       classes.push(`h-${name}`);
     }
   } else {
+    const nodeAny = node as any;
+    const sizingH = typeof nodeAny.layoutSizingHorizontal === 'string' ? nodeAny.layoutSizingHorizontal : null;
+    const sizingV = typeof nodeAny.layoutSizingVertical === 'string' ? nodeAny.layoutSizingVertical : null;
+
     if (isFrame) {
       const frame = node as FrameNode;
       if ((frame as any).layoutGrow === 1) classes.push('flex-1');
       if ((frame as any).layoutAlign === 'STRETCH') classes.push('self-stretch');
     }
+
+    // FIXED-sized children get explicit dimensions (but not in wrap containers — use percentage there)
+    // For unknown sizing (null), emit width for non-text nodes only (text defaults to HUG/auto)
+    var emitFixedW = sizingH === 'FIXED' || (sizingH === null && node.type !== 'TEXT');
+    var emitFixedH = sizingV === 'FIXED';
+    if (emitFixedW && node.width > 0 && !parentIsWrap) {
+      classes.push(`w-[${Math.round(node.width)}px]`);
+    }
+    if (emitFixedH && node.height > 0) {
+      classes.push(`h-[${Math.round(node.height)}px]`);
+    }
+
+    // In wrap containers, children (both FIXED and FILL) need fractional widths based on column count
+    if (parentIsWrap && node.width > 0 && parentWidth && parentWidth > 0) {
+      var _gap = parentGap || 0;
+      var _childW = Math.round(node.width);
+      var _cols = Math.max(1, Math.round((parentWidth + _gap) / (_childW + _gap)));
+      if (_cols >= 2) {
+        if (_cols === 2) classes.push('w-[calc(50%-' + Math.round(_gap / 2) + 'px)]');
+        else if (_cols === 3) classes.push('w-[calc(33.333%-' + Math.round(_gap * 2 / 3) + 'px)]');
+        else if (_cols === 4) classes.push('w-[calc(25%-' + Math.round(_gap * 3 / 4) + 'px)]');
+        else classes.push('w-[calc(' + (100 / _cols).toFixed(3) + '%-' + Math.round(_gap * (_cols - 1) / _cols) + 'px)]');
+      } else {
+        classes.push('w-full');
+      }
+    }
+
   }
 
   // Background / text color + gradients
@@ -1662,20 +1959,13 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
       }
       if (!fillHandled && paint.type === 'GRADIENT_LINEAR' && (paint as any).gradientStops) {
         const grad = paint as GradientPaint;
-        const dir = gradientAngleToDirection(grad.gradientTransform);
-        const stops = grad.gradientStops;
-        classes.push(`bg-gradient-to-${dir}`);
-        if (stops.length > 0) classes.push(`from-[${gradientStopHex(stops[0])}]`);
-        if (stops.length > 2) classes.push(`via-[${gradientStopHex(stops[Math.floor(stops.length / 2)])}]`);
-        if (stops.length > 1) classes.push(`to-[${gradientStopHex(stops[stops.length - 1])}]`);
+        classes.push(gradientPaintToTailwindBgClass(grad));
         fillHandled = true;
         break;
       }
       if (!fillHandled && paint.type === 'GRADIENT_RADIAL' && (paint as any).gradientStops) {
         const grad = paint as GradientPaint;
-        const stops = grad.gradientStops;
-        const stopStrs = stops.map((s: ColorStop) => `${gradientStopHex(s)} ${Math.round(s.position * 100)}%`).join(',');
-        classes.push(`bg-[radial-gradient(circle,${stopStrs})]`);
+        classes.push(gradientPaintToTailwindBgClass(grad));
         fillHandled = true;
         break;
       }
@@ -1853,13 +2143,13 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
     if (typeof nodeAny.maxHeight === 'number' && nodeAny.maxHeight > 0 && nodeAny.maxHeight < 10000) classes.push(`max-h-[${Math.round(nodeAny.maxHeight)}px]`);
   }
 
-  // Auto-layout child sizing
+  // Auto-layout child sizing (FILL → w-full/h-full, skip horizontal in wrap containers)
   if (parentIsAutoLayout) {
-    const nodeAny = node as any;
-    if (typeof nodeAny.layoutSizingHorizontal === 'string' && nodeAny.layoutSizingHorizontal === 'FILL') {
-      if (!classes.includes('flex-1') && !classes.includes('self-stretch')) classes.push('w-full');
+    var _szAny = node as any;
+    if (typeof _szAny.layoutSizingHorizontal === 'string' && _szAny.layoutSizingHorizontal === 'FILL') {
+      if (!parentIsWrap && !classes.includes('flex-1') && !classes.includes('self-stretch')) classes.push('w-full');
     }
-    if (typeof nodeAny.layoutSizingVertical === 'string' && nodeAny.layoutSizingVertical === 'FILL') {
+    if (typeof _szAny.layoutSizingVertical === 'string' && _szAny.layoutSizingVertical === 'FILL') {
       if (!classes.includes('flex-1')) classes.push('h-full');
     }
   }
@@ -1933,30 +2223,29 @@ function nodeToClassesWithRegistry(node: SceneNode, parentIsAutoLayout: boolean,
 }
 
 // Generate layer HTML with registry (CSS variable mode)
-async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, registry: TokenRegistry, assets: AssetMap, usedFileNames: Set<string>): Promise<string> {
-  if (indent > 10) return '';
+async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, registry: TokenRegistry, assets: AssetMap, usedFileNames: Set<string>, parentIsWrap?: boolean, parentWidth?: number, parentGap?: number): Promise<string> {
   if (node.visible === false) return '';
 
   const pad = '  '.repeat(indent);
-  const classes = nodeToClassesWithRegistry(node, parentIsAutoLayout, registry);
-  const classStr = classes.length > 0 ? ` class="${classes.join(' ')}"` : '';
+  const classes = nodeToClassesWithRegistry(node, parentIsAutoLayout, registry, parentIsWrap, parentWidth, parentGap, isTopLevel);
+  let backgroundImageAttr = '';
 
   if (hasImageFill(node)) {
-    const imgClasses = [...classes, ...getImageClasses(node, parentIsAutoLayout)];
-    const imgClassStr = imgClasses.length > 0 ? ` class="${imgClasses.join(' ')}"` : '';
-    const name = node.name || 'image';
-    const id = nextAssetId();
-    try {
-      const bytes = await (node as any).exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: 2 } });
-      assets[id] = {
-        base64: uint8ToBase64(bytes),
-        mimeType: 'image/png',
-        fileName: toAssetFileName(name, 'png', usedFileNames),
-      };
-    } catch (e) {
-      return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    const imageUsage = classifyImageFillUsage(node, parentIsAutoLayout);
+    const exported = await exportImageFillToAsset(node, assets, usedFileNames);
+    if (imageUsage === 'image') {
+      const imgClasses = [...classes, ...getImageClasses(node, parentIsAutoLayout)];
+      const imgClassStr = imgClasses.length > 0 ? ` class="${imgClasses.join(' ')}"` : '';
+      if (!exported) {
+        const alt = (node.name || 'image').replace(/"/g, '&quot;');
+        return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${alt}" />\n`;
+      }
+      return `${pad}<img${imgClassStr} src="{{asset:${exported.id}}}" alt="${exported.alt}" />\n`;
     }
-    return `${pad}<img${imgClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    if (exported) {
+      classes.push(...getBackgroundImageClasses(node));
+      backgroundImageAttr = ` style="background-image: url('{{asset:${exported.id}}}');"`;
+    }
   }
 
   // Detect semantic element
@@ -1993,10 +2282,10 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
   if (node.type === 'RECTANGLE') {
     if (semantic.selfClosing) {
       const hrClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
-      return `${pad}<${semantic.tag}${hrClassStr} />\n`;
+      return `${pad}<${semantic.tag}${hrClassStr}${backgroundImageAttr} />\n`;
     }
     const finalClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
-    return `${pad}<div${finalClassStr}></div>\n`;
+    return `${pad}<div${finalClassStr}${backgroundImageAttr}></div>\n`;
   }
 
   if (node.type === 'GROUP') {
@@ -2004,10 +2293,12 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
       return await exportCompositeImage(node, indent, pad, [], assets, usedFileNames, false);
     }
     const group = node as GroupNode;
-    let html = '';
+    const groupClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+    let html = `${pad}<div${groupClassStr}>\n`;
     for (const child of group.children) {
-      html += await generateLayerHTMLWithRegistry(child, indent, false, false, registry, assets, usedFileNames);
+      html += await generateLayerHTMLWithRegistry(child, indent + 1, false, false, registry, assets, usedFileNames);
     }
+    html += `${pad}</div>\n`;
     return html;
   }
 
@@ -2019,11 +2310,18 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
     const tag = semantic.tag;
     const isAutoLayout = frame.layoutMode && frame.layoutMode !== 'NONE';
     const isOverlap = !isAutoLayout && frame.children.length > 0 && inferLayoutFromChildren(frame) === 'overlap';
+    const isWrap = isAutoLayout && (frame as any).layoutWrap === 'WRAP';
+    const frameGap = typeof frame.itemSpacing === 'number' ? frame.itemSpacing : 0;
+    // Inner width = outer width minus horizontal padding (for accurate column calculation)
+    const framePl = typeof frame.paddingLeft === 'number' ? frame.paddingLeft : 0;
+    const framePr = typeof frame.paddingRight === 'number' ? frame.paddingRight : 0;
+    const frameInnerWidth = Math.round(frame.width) - framePl - framePr;
 
-    if (semantic.selfClosing) {
+    const canSelfClose = semantic.selfClosing && frame.children.length === 0;
+    if (canSelfClose) {
       const scClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
       const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
-      return `${pad}<${tag}${scClassStr}${attrStr} />\n`;
+      return `${pad}<${tag}${scClassStr}${backgroundImageAttr}${attrStr} />\n`;
     }
 
     let html = '';
@@ -2032,7 +2330,7 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
     }
     const finalClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
     const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
-    html += `${pad}<${tag}${finalClassStr}${attrStr}>\n`;
+    html += `${pad}<${tag}${finalClassStr}${backgroundImageAttr}${attrStr}>\n`;
 
     for (const child of frame.children) {
       if (child.visible === false) continue;
@@ -2048,15 +2346,18 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
           const text = getTextContent(child as TextNode);
           html += `${pad}  <${childSemantic.tag} class="${childClasses.join(' ')}">${text}</${childSemantic.tag}>\n`;
         } else {
-          html += await generateLayerHTMLWithRegistry(child, indent + 1, false, false, registry, assets, usedFileNames);
+          const overlayClassStr = childClasses.length > 0 ? ` class="${childClasses.join(' ')}"` : '';
+          html += `${pad}  <div${overlayClassStr}>\n`;
+          html += await generateLayerHTMLWithRegistry(child, indent + 2, false, false, registry, assets, usedFileNames);
+          html += `${pad}  </div>\n`;
         }
       } else {
         if (semantic.wrapChildren) {
           html += `${pad}  <${semantic.wrapChildren}>\n`;
-          html += await generateLayerHTMLWithRegistry(child, indent + 2, false, !!isAutoLayout, registry, assets, usedFileNames);
+          html += await generateLayerHTMLWithRegistry(child, indent + 2, false, !!isAutoLayout, registry, assets, usedFileNames, isWrap, frameInnerWidth, frameGap);
           html += `${pad}  </${semantic.wrapChildren}>\n`;
         } else {
-          html += await generateLayerHTMLWithRegistry(child, indent + 1, false, !!isAutoLayout, registry, assets, usedFileNames);
+          html += await generateLayerHTMLWithRegistry(child, indent + 1, false, !!isAutoLayout, registry, assets, usedFileNames, isWrap, frameInnerWidth, frameGap);
         }
       }
     }
@@ -2066,7 +2367,7 @@ async function generateLayerHTMLWithRegistry(node: SceneNode, indent: number, is
   }
 
   const fallbackClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
-  return `${pad}<div${fallbackClassStr}></div>\n`;
+  return `${pad}<div${fallbackClassStr}${backgroundImageAttr}></div>\n`;
 }
 
 function inferLayoutFromChildren(frame: FrameNode): 'row' | 'col' | 'overlap' {
@@ -2097,7 +2398,7 @@ function inferLayoutFromChildren(frame: FrameNode): 'row' | 'col' | 'overlap' {
   return 'col';
 }
 
-function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
+function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean, parentIsWrap?: boolean, parentWidth?: number, parentGap?: number, isTopLevel?: boolean): string[] {
   const classes: string[] = [];
 
   // Skip invisible
@@ -2109,31 +2410,52 @@ function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
     const frame = node as FrameNode;
 
     // Auto-layout -> flexbox
-    if (frame.layoutMode && frame.layoutMode !== 'NONE') {
-      classes.push('flex');
-      if (frame.layoutMode === 'VERTICAL') classes.push('flex-col');
+    const layoutMode = (frame as any).layoutMode as string;
+    if (layoutMode && layoutMode !== 'NONE') {
+      if (layoutMode === 'GRID') {
+        classes.push('grid');
+        const gridCols = (frame as any).gridColumnCount;
+        const gridRows = (frame as any).gridRowCount;
+        if (typeof gridCols === 'number' && gridCols > 0) {
+          if (gridCols <= 12) classes.push(`grid-cols-${gridCols}`);
+          else classes.push(`grid-cols-[repeat(${gridCols},minmax(0,1fr))]`);
+        }
+        if (typeof gridRows === 'number' && gridRows > 0) {
+          if (gridRows <= 12) classes.push(`grid-rows-${gridRows}`);
+          else classes.push(`grid-rows-[repeat(${gridRows},minmax(0,1fr))]`);
+        }
+      } else {
+        classes.push('flex');
+        if (layoutMode === 'VERTICAL') classes.push('flex-col');
 
-      // Primary axis alignment
-      switch (frame.primaryAxisAlignItems) {
-        case 'CENTER': classes.push('justify-center'); break;
-        case 'MAX': classes.push('justify-end'); break;
-        case 'SPACE_BETWEEN': classes.push('justify-between'); break;
-      }
+        // Primary axis alignment
+        switch (frame.primaryAxisAlignItems) {
+          case 'CENTER': classes.push('justify-center'); break;
+          case 'MAX': classes.push('justify-end'); break;
+          case 'SPACE_BETWEEN': classes.push('justify-between'); break;
+        }
 
-      // Counter axis alignment
-      switch (frame.counterAxisAlignItems) {
-        case 'CENTER': classes.push('items-center'); break;
-        case 'MAX': classes.push('items-end'); break;
+        // Counter axis alignment
+        switch (frame.counterAxisAlignItems) {
+          case 'CENTER': classes.push('items-center'); break;
+          case 'MAX': classes.push('items-end'); break;
+        }
+
+        // Wrap
+        if ((frame as any).layoutWrap === 'WRAP') {
+          classes.push('flex-wrap');
+        }
       }
 
       // Gap
       if (typeof frame.itemSpacing === 'number' && frame.itemSpacing > 0) {
         classes.push(`gap-${pxToTailwindSpacing(frame.itemSpacing)}`);
       }
-
-      // Wrap
-      if ((frame as any).layoutWrap === 'WRAP') {
-        classes.push('flex-wrap');
+      if (layoutMode === 'GRID') {
+        const counterSpacing = (frame as any).counterAxisSpacing;
+        if (typeof counterSpacing === 'number' && counterSpacing > 0 && typeof frame.itemSpacing === 'number' && frame.itemSpacing > 0 && counterSpacing !== frame.itemSpacing) {
+          classes.push(`gap-y-${pxToTailwindSpacing(counterSpacing)}`);
+        }
       }
     } else {
       // Non-auto-layout frame: infer layout
@@ -2169,16 +2491,23 @@ function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
     }
 
     // Clip content
-    if (frame.clipsContent) {
+    if (frame.clipsContent && !isTopLevel) {
       classes.push('overflow-hidden');
     }
   }
 
   // Size
-  if (!parentIsAutoLayout) {
+  if (isTopLevel) {
+    // Top-level element: use w-full, no fixed height — let content determine height
+    classes.push('w-full');
+  } else if (!parentIsAutoLayout) {
     if (node.width > 0) classes.push(`w-${pxToTailwindSpacing(Math.round(node.width))}`);
     if (node.height > 0) classes.push(`h-${pxToTailwindSpacing(Math.round(node.height))}`);
   } else {
+    const nodeAny = node as any;
+    const sizingH = typeof nodeAny.layoutSizingHorizontal === 'string' ? nodeAny.layoutSizingHorizontal : null;
+    const sizingV = typeof nodeAny.layoutSizingVertical === 'string' ? nodeAny.layoutSizingVertical : null;
+
     // In auto-layout: check if child stretches or grows
     if (isFrame) {
       const frame = node as FrameNode;
@@ -2187,6 +2516,32 @@ function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
       }
       if ((frame as any).layoutAlign === 'STRETCH') {
         classes.push('self-stretch');
+      }
+    }
+
+    // FIXED-sized children get explicit dimensions (but not in wrap containers — use percentage there)
+    // For unknown sizing (null), emit width for non-text nodes only (text defaults to HUG/auto)
+    var emitFixedW = sizingH === 'FIXED' || (sizingH === null && node.type !== 'TEXT');
+    var emitFixedH = sizingV === 'FIXED';
+    if (emitFixedW && node.width > 0 && !parentIsWrap) {
+      classes.push(`w-[${Math.round(node.width)}px]`);
+    }
+    if (emitFixedH && node.height > 0) {
+      classes.push(`h-[${Math.round(node.height)}px]`);
+    }
+
+    // In wrap containers, children (both FIXED and FILL) need fractional widths based on column count
+    if (parentIsWrap && node.width > 0 && parentWidth && parentWidth > 0) {
+      var gap = parentGap || 0;
+      var childW = Math.round(node.width);
+      var cols = Math.max(1, Math.round((parentWidth + gap) / (childW + gap)));
+      if (cols >= 2) {
+        if (cols === 2) classes.push('w-[calc(50%-' + Math.round(gap / 2) + 'px)]');
+        else if (cols === 3) classes.push('w-[calc(33.333%-' + Math.round(gap * 2 / 3) + 'px)]');
+        else if (cols === 4) classes.push('w-[calc(25%-' + Math.round(gap * 3 / 4) + 'px)]');
+        else classes.push('w-[calc(' + (100 / cols).toFixed(3) + '%-' + Math.round(gap * (cols - 1) / cols) + 'px)]');
+      } else {
+        classes.push('w-full');
       }
     }
   }
@@ -2208,20 +2563,13 @@ function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
       }
       if (!fillHandled && paint.type === 'GRADIENT_LINEAR' && (paint as any).gradientStops) {
         const grad = paint as GradientPaint;
-        const dir = gradientAngleToDirection(grad.gradientTransform);
-        const stops = grad.gradientStops;
-        classes.push(`bg-gradient-to-${dir}`);
-        if (stops.length > 0) classes.push(`from-[${gradientStopHex(stops[0])}]`);
-        if (stops.length > 2) classes.push(`via-[${gradientStopHex(stops[Math.floor(stops.length / 2)])}]`);
-        if (stops.length > 1) classes.push(`to-[${gradientStopHex(stops[stops.length - 1])}]`);
+        classes.push(gradientPaintToTailwindBgClass(grad));
         fillHandled = true;
         break;
       }
       if (!fillHandled && paint.type === 'GRADIENT_RADIAL' && (paint as any).gradientStops) {
         const grad = paint as GradientPaint;
-        const stops = grad.gradientStops;
-        const stopStrs = stops.map((s: ColorStop) => `${gradientStopHex(s)} ${Math.round(s.position * 100)}%`).join(',');
-        classes.push(`bg-[radial-gradient(circle,${stopStrs})]`);
+        classes.push(gradientPaintToTailwindBgClass(grad));
         fillHandled = true;
         break;
       }
@@ -2429,13 +2777,13 @@ function nodeToClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
     if (typeof nodeAny.maxHeight === 'number' && nodeAny.maxHeight > 0 && nodeAny.maxHeight < 10000) classes.push(`max-h-[${Math.round(nodeAny.maxHeight)}px]`);
   }
 
-  // Auto-layout child sizing
+  // Auto-layout child sizing (FILL → w-full/h-full, skip horizontal in wrap containers)
   if (parentIsAutoLayout) {
-    const nodeAny = node as any;
-    if (typeof nodeAny.layoutSizingHorizontal === 'string' && nodeAny.layoutSizingHorizontal === 'FILL') {
-      if (!classes.includes('flex-1') && !classes.includes('self-stretch')) classes.push('w-full');
+    var _szAny = node as any;
+    if (typeof _szAny.layoutSizingHorizontal === 'string' && _szAny.layoutSizingHorizontal === 'FILL') {
+      if (!parentIsWrap && !classes.includes('flex-1') && !classes.includes('self-stretch')) classes.push('w-full');
     }
-    if (typeof nodeAny.layoutSizingVertical === 'string' && nodeAny.layoutSizingVertical === 'FILL') {
+    if (typeof _szAny.layoutSizingVertical === 'string' && _szAny.layoutSizingVertical === 'FILL') {
       if (!classes.includes('flex-1')) classes.push('h-full');
     }
   }
@@ -2580,12 +2928,17 @@ function detectSemanticElement(node: SceneNode, isTopLevel: boolean): SemanticRe
     const frame = node as FrameNode;
     const children = frame.children ? frame.children.filter((c: SceneNode) => c.visible !== false) : [];
 
-    // Button-like: small frame with ≤3 children, has text child, has background fill
-    if (children.length <= 3 && children.length >= 1 && node.width < 300 && node.height < 80) {
+    // Button-like: small frame with ≤2 children, has text child, has background fill,
+    // must not be an auto-layout container with mixed content (e.g. product card sub-sections)
+    if (children.length <= 2 && children.length >= 1 && node.width < 300 && node.height <= 60) {
       const hasText = children.some((c: SceneNode) => c.type === 'TEXT');
       const hasBgFill = 'fills' in node && Array.isArray(node.fills) &&
         (node.fills as ReadonlyArray<Paint>).some(p => p.type === 'SOLID' && p.visible !== false);
-      if (hasText && hasBgFill) {
+      // Exclude auto-layout containers with non-text children (price rows, info sections, etc.)
+      var hasNonTextChild = children.some(function(c: SceneNode) {
+        return c.type !== 'TEXT' && c.type !== 'VECTOR' && c.type !== 'ELLIPSE';
+      });
+      if (hasText && hasBgFill && !hasNonTextChild) {
         return { tag: 'button', extraClasses: ['cursor-pointer'], selfClosing: false, attrs: '', wrapChildren: null };
       }
     }
@@ -2643,17 +2996,33 @@ function shouldExportAsCompositeImage(node: SceneNode): boolean {
   const visibleChildren = children.filter((c: SceneNode) => c.visible !== false);
   if (visibleChildren.length === 0) return false;
 
+  // Size guard: large containers with many small children (like color swatch rows)
+  // should NOT be flattened into a composite image — render each child individually.
+  const isLargeContainer = node.width > 100 && visibleChildren.length > 2;
+  // Check if this looks like a layout container (auto-layout frame) rather than a compound icon
+  var isLayoutContainer = false;
+  if (node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE') {
+    var layoutMode = (node as any).layoutMode;
+    if (layoutMode && layoutMode !== 'NONE') isLayoutContainer = true;
+  }
+  if (isLargeContainer && isLayoutContainer) return false;
+
   // Criteria 1: name matches common icon/logo keywords
   const nameMatch = COMPOSITE_NAME_RE.test(node.name);
 
   // Criteria 2: all visible children are vector-like
   const allVector = visibleChildren.every((c: SceneNode) => isVectorLike(c));
 
-  if (allVector) return true;
+  // For non-name-matched nodes, require small size to composite (icons are typically small)
+  if (allVector) {
+    if (isLargeContainer) return false;
+    return true;
+  }
   if (nameMatch && visibleChildren.every((c: SceneNode) => isVectorLike(c) || isVectorContainer(c))) return true;
 
   // Criteria 3: nested vector group — children are vector-like or containers of vectors (one level)
   if (node.type === 'GROUP') {
+    if (isLargeContainer) return false;
     const allVectorOrContainers = visibleChildren.every((c: SceneNode) => {
       if (isVectorLike(c)) return true;
       return isVectorContainer(c);
@@ -2737,6 +3106,69 @@ function getImageFillScaleMode(node: SceneNode): string | null {
   return null;
 }
 
+function hasVisibleChildren(node: SceneNode): boolean {
+  if (!('children' in node)) return false;
+  const children = (node as any).children as readonly SceneNode[];
+  return Array.isArray(children) && children.some((c: SceneNode) => c.visible !== false);
+}
+
+function classifyImageFillUsage(node: SceneNode, parentIsAutoLayout: boolean): 'background' | 'image' {
+  const hasChildren = hasVisibleChildren(node);
+  const scaleMode = getImageFillScaleMode(node);
+  const name = (node.name || '').toLowerCase();
+
+  // Hard safety rule: if a node has children, treat image fill as background
+  // so we never collapse the subtree into a single <img> and lose content.
+  if (hasChildren) return 'background';
+
+  let bgScore = 0;
+  let imageScore = 0;
+
+  if (/\b(bg|background|hero|cover|banner|backdrop)\b/.test(name)) bgScore += 2;
+  if (/\b(img|image|photo|avatar|logo|icon|thumb|thumbnail)\b/.test(name)) imageScore += 2;
+
+  if (scaleMode === 'FILL' || scaleMode === 'CROP') bgScore += 1;
+  if (scaleMode === 'FIT' || scaleMode === 'TILE') imageScore += 1;
+
+  const parent = (node as any).parent as SceneNode | undefined;
+  if (parent && typeof parent.width === 'number' && typeof parent.height === 'number' && parent.width > 0 && parent.height > 0) {
+    const parentArea = parent.width * parent.height;
+    const nodeArea = node.width * node.height;
+    const coverage = parentArea > 0 ? nodeArea / parentArea : 0;
+    if (coverage >= 0.7) bgScore += 1;
+    if (coverage <= 0.2) imageScore += 1;
+  }
+
+  if (node.width <= 96 && node.height <= 96) imageScore += 1;
+  if (parentIsAutoLayout && !hasChildren) imageScore += 1;
+
+  if (hasChildren && bgScore >= imageScore) return 'background';
+  return bgScore > imageScore ? 'background' : 'image';
+}
+
+function getBackgroundImageClasses(node: SceneNode): string[] {
+  const scaleMode = getImageFillScaleMode(node);
+  if (scaleMode === 'TILE') return ['bg-repeat'];
+  if (scaleMode === 'FIT') return ['bg-contain', 'bg-center', 'bg-no-repeat'];
+  return ['bg-cover', 'bg-center', 'bg-no-repeat'];
+}
+
+async function exportImageFillToAsset(node: SceneNode, assets: AssetMap, usedFileNames: Set<string>): Promise<{ id: string; alt: string } | null> {
+  const name = node.name || 'image';
+  const id = nextAssetId();
+  try {
+    const bytes = await (node as any).exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: 2 } });
+    assets[id] = {
+      base64: uint8ToBase64(bytes),
+      mimeType: 'image/png',
+      fileName: toAssetFileName(name, 'png', usedFileNames),
+    };
+    return { id, alt: name.replace(/"/g, '&quot;') };
+  } catch (e) {
+    return null;
+  }
+}
+
 function getImageClasses(node: SceneNode, parentIsAutoLayout: boolean): string[] {
   const cls: string[] = ['max-w-full'];
   const scaleMode = getImageFillScaleMode(node);
@@ -2766,33 +3198,31 @@ function getVectorImgClasses(): string[] {
   return ['shrink-0'];
 }
 
-async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, assets: AssetMap, usedFileNames: Set<string>): Promise<string> {
-  // Max depth limit
-  if (indent > 10) return '';
+async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, assets: AssetMap, usedFileNames: Set<string>, parentIsWrap?: boolean, parentWidth?: number, parentGap?: number): Promise<string> {
   // Skip invisible/hidden nodes
   if (node.visible === false) return '';
 
   const pad = '  '.repeat(indent);
-  const classes = nodeToClasses(node, parentIsAutoLayout);
-  const classStr = classes.length > 0 ? ` class="${classes.join(' ')}"` : '';
+  const classes = nodeToClasses(node, parentIsAutoLayout, parentIsWrap, parentWidth, parentGap, isTopLevel);
+  let backgroundImageAttr = '';
 
   // Image fills -> <img> with exported asset
   if (hasImageFill(node)) {
-    const imgClasses = [...classes, ...getImageClasses(node, parentIsAutoLayout)];
-    const imgClassStr = imgClasses.length > 0 ? ` class="${imgClasses.join(' ')}"` : '';
-    const name = node.name || 'image';
-    const id = nextAssetId();
-    try {
-      const bytes = await (node as any).exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: 2 } });
-      assets[id] = {
-        base64: uint8ToBase64(bytes),
-        mimeType: 'image/png',
-        fileName: toAssetFileName(name, 'png', usedFileNames),
-      };
-    } catch (e) {
-      return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    const imageUsage = classifyImageFillUsage(node, parentIsAutoLayout);
+    const exported = await exportImageFillToAsset(node, assets, usedFileNames);
+    if (imageUsage === 'image') {
+      const imgClasses = [...classes, ...getImageClasses(node, parentIsAutoLayout)];
+      const imgClassStr = imgClasses.length > 0 ? ` class="${imgClasses.join(' ')}"` : '';
+      if (!exported) {
+        const alt = (node.name || 'image').replace(/"/g, '&quot;');
+        return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${alt}" />\n`;
+      }
+      return `${pad}<img${imgClassStr} src="{{asset:${exported.id}}}" alt="${exported.alt}" />\n`;
     }
-    return `${pad}<img${imgClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    if (exported) {
+      classes.push(...getBackgroundImageClasses(node));
+      backgroundImageAttr = ` style="background-image: url('{{asset:${exported.id}}}');"`;
+    }
   }
 
   // Detect semantic element for the current node
@@ -2832,10 +3262,10 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
   if (node.type === 'RECTANGLE') {
     if (semantic.selfClosing) {
       const hrClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
-      return `${pad}<${semantic.tag}${hrClassStr} />\n`;
+      return `${pad}<${semantic.tag}${hrClassStr}${backgroundImageAttr} />\n`;
     }
     const finalClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
-    return `${pad}<div${finalClassStr}></div>\n`;
+    return `${pad}<div${finalClassStr}${backgroundImageAttr}></div>\n`;
   }
 
   // GROUP -> unwrap children
@@ -2844,10 +3274,12 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
       return await exportCompositeImage(node, indent, pad, [], assets, usedFileNames, false);
     }
     const group = node as GroupNode;
-    let html = '';
+    const groupClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
+    let html = `${pad}<div${groupClassStr}>\n`;
     for (const child of group.children) {
-      html += await generateLayerHTML(child, indent, false, false, assets, usedFileNames);
+      html += await generateLayerHTML(child, indent + 1, false, false, assets, usedFileNames);
     }
+    html += `${pad}</div>\n`;
     return html;
   }
 
@@ -2860,12 +3292,19 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
     const tag = semantic.tag;
     const isAutoLayout = frame.layoutMode && frame.layoutMode !== 'NONE';
     const isOverlap = !isAutoLayout && frame.children.length > 0 && inferLayoutFromChildren(frame) === 'overlap';
+    const isWrap = isAutoLayout && (frame as any).layoutWrap === 'WRAP';
+    const frameGap = typeof frame.itemSpacing === 'number' ? frame.itemSpacing : 0;
+    // Inner width = outer width minus horizontal padding (for accurate column calculation)
+    const framePl = typeof frame.paddingLeft === 'number' ? frame.paddingLeft : 0;
+    const framePr = typeof frame.paddingRight === 'number' ? frame.paddingRight : 0;
+    const frameInnerWidth = Math.round(frame.width) - framePl - framePr;
 
     // Self-closing semantic tags (input, hr)
-    if (semantic.selfClosing) {
+    const canSelfClose = semantic.selfClosing && frame.children.length === 0;
+    if (canSelfClose) {
       const scClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
       const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
-      return `${pad}<${tag}${scClassStr}${attrStr} />\n`;
+      return `${pad}<${tag}${scClassStr}${backgroundImageAttr}${attrStr} />\n`;
     }
 
     let html = '';
@@ -2875,7 +3314,7 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
 
     const finalClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
     const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
-    html += `${pad}<${tag}${finalClassStr}${attrStr}>\n`;
+    html += `${pad}<${tag}${finalClassStr}${backgroundImageAttr}${attrStr}>\n`;
 
     for (const child of frame.children) {
       if (child.visible === false) continue;
@@ -2891,16 +3330,19 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
           const text = getTextContent(child as TextNode);
           html += `${pad}  <${childSemantic.tag} class="${childClasses.join(' ')}">${text}</${childSemantic.tag}>\n`;
         } else {
-          html += await generateLayerHTML(child, indent + 1, false, false, assets, usedFileNames);
+          const overlayClassStr = childClasses.length > 0 ? ` class="${childClasses.join(' ')}"` : '';
+          html += `${pad}  <div${overlayClassStr}>\n`;
+          html += await generateLayerHTML(child, indent + 2, false, false, assets, usedFileNames);
+          html += `${pad}  </div>\n`;
         }
       } else {
         // Wrap children in <li> if parent is <ul>
         if (semantic.wrapChildren) {
           html += `${pad}  <${semantic.wrapChildren}>\n`;
-          html += await generateLayerHTML(child, indent + 2, false, !!isAutoLayout, assets, usedFileNames);
+          html += await generateLayerHTML(child, indent + 2, false, !!isAutoLayout, assets, usedFileNames, isWrap, frameInnerWidth, frameGap);
           html += `${pad}  </${semantic.wrapChildren}>\n`;
         } else {
-          html += await generateLayerHTML(child, indent + 1, false, !!isAutoLayout, assets, usedFileNames);
+          html += await generateLayerHTML(child, indent + 1, false, !!isAutoLayout, assets, usedFileNames, isWrap, frameInnerWidth, frameGap);
         }
       }
     }
@@ -2911,7 +3353,7 @@ async function generateLayerHTML(node: SceneNode, indent: number, isTopLevel: bo
 
   // Fallback
   const fallbackClassStr = allClasses.length > 0 ? ` class="${allClasses.join(' ')}"` : '';
-  return `${pad}<div${fallbackClassStr}></div>\n`;
+  return `${pad}<div${fallbackClassStr}${backgroundImageAttr}></div>\n`;
 }
 
 // ─── Design Lint ───
@@ -3069,34 +3511,34 @@ function htmlToJSX(html: string): string {
 
 // JSX-aware layer HTML generation (wraps standard generation + transforms)
 async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, assets: AssetMap, usedFileNames: Set<string>, importCollector: ImportCollector): Promise<string> {
-  if (indent > 10) return '';
   if (node.visible === false) return '';
 
   const pad = '  '.repeat(indent);
   const classes = nodeToClasses(node, parentIsAutoLayout);
   const semantic = detectSemanticElement(node, isTopLevel);
   const allClasses = [...classes, ...semantic.extraClasses];
+  let backgroundStyleAttr = '';
 
   // Check for shadcn component
   const shadcn = detectShadcnComponent(node, semantic.tag);
 
   // Image fills
   if (hasImageFill(node)) {
-    const imgClasses = [...allClasses, ...getImageClasses(node, parentIsAutoLayout)];
-    const imgClassStr = imgClasses.length > 0 ? ` className="${imgClasses.join(' ')}"` : '';
-    const name = node.name || 'image';
-    const id = nextAssetId();
-    try {
-      const bytes = await (node as any).exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: 2 } });
-      assets[id] = {
-        base64: uint8ToBase64(bytes),
-        mimeType: 'image/png',
-        fileName: toAssetFileName(name, 'png', usedFileNames),
-      };
-    } catch (e) {
-      return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    const imageUsage = classifyImageFillUsage(node, parentIsAutoLayout);
+    const exported = await exportImageFillToAsset(node, assets, usedFileNames);
+    if (imageUsage === 'image') {
+      const imgClasses = [...allClasses, ...getImageClasses(node, parentIsAutoLayout)];
+      const imgClassStr = imgClasses.length > 0 ? ` className="${imgClasses.join(' ')}"` : '';
+      if (!exported) {
+        const alt = (node.name || 'image').replace(/"/g, '&quot;');
+        return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${alt}" />\n`;
+      }
+      return `${pad}<img${imgClassStr} src="{{asset:${exported.id}}}" alt="${exported.alt}" />\n`;
     }
-    return `${pad}<img${imgClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    if (exported) {
+      allClasses.push(...getBackgroundImageClasses(node));
+      backgroundStyleAttr = ` style={{ backgroundImage: "url('{{asset:${exported.id}}}')" }}`;
+    }
   }
 
   // Text node
@@ -3133,14 +3575,14 @@ async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boo
     if (shadcn) {
       importCollector.add(shadcn);
       const scClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
-      return `${pad}<${shadcn.name}${scClassStr} />\n`;
+      return `${pad}<${shadcn.name}${scClassStr}${backgroundStyleAttr} />\n`;
     }
     if (semantic.selfClosing) {
       const hrClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
-      return `${pad}<${semantic.tag}${hrClassStr} />\n`;
+      return `${pad}<${semantic.tag}${hrClassStr}${backgroundStyleAttr} />\n`;
     }
     const finalClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
-    return `${pad}<div${finalClassStr}></div>\n`;
+    return `${pad}<div${finalClassStr}${backgroundStyleAttr}></div>\n`;
   }
 
   // GROUP
@@ -3149,10 +3591,12 @@ async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boo
       return await exportCompositeImage(node, indent, pad, [], assets, usedFileNames, true);
     }
     const group = node as GroupNode;
-    let html = '';
+    const groupClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+    let html = `${pad}<div${groupClassStr}>\n`;
     for (const child of group.children) {
-      html += await generateLayerJSX(child, indent, false, false, assets, usedFileNames, importCollector);
+      html += await generateLayerJSX(child, indent + 1, false, false, assets, usedFileNames, importCollector);
     }
+    html += `${pad}</div>\n`;
     return html;
   }
 
@@ -3173,10 +3617,11 @@ async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boo
     }
 
     // Self-closing
-    if (semantic.selfClosing) {
+    const canSelfClose = semantic.selfClosing && frame.children.length === 0;
+    if (canSelfClose) {
       const scClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
       const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
-      return `${pad}<${tag}${scClassStr}${attrStr} />\n`;
+      return `${pad}<${tag}${scClassStr}${backgroundStyleAttr}${attrStr} />\n`;
     }
 
     let html = '';
@@ -3186,7 +3631,7 @@ async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boo
 
     const finalClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
     const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
-    html += `${pad}<${tag}${finalClassStr}${attrStr}>\n`;
+    html += `${pad}<${tag}${finalClassStr}${backgroundStyleAttr}${attrStr}>\n`;
 
     for (const child of frame.children) {
       if (child.visible === false) continue;
@@ -3202,7 +3647,10 @@ async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boo
           const text = getTextContent(child as TextNode);
           html += `${pad}  <${childSemantic.tag} className="${childClasses.join(' ')}">${text}</${childSemantic.tag}>\n`;
         } else {
-          html += await generateLayerJSX(child, indent + 1, false, false, assets, usedFileNames, importCollector);
+          const overlayClassStr = childClasses.length > 0 ? ` className="${childClasses.join(' ')}"` : '';
+          html += `${pad}  <div${overlayClassStr}>\n`;
+          html += await generateLayerJSX(child, indent + 2, false, false, assets, usedFileNames, importCollector);
+          html += `${pad}  </div>\n`;
         }
       } else {
         if (semantic.wrapChildren) {
@@ -3220,12 +3668,11 @@ async function generateLayerJSX(node: SceneNode, indent: number, isTopLevel: boo
   }
 
   const fallbackClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
-  return `${pad}<div${fallbackClassStr}></div>\n`;
+  return `${pad}<div${fallbackClassStr}${backgroundStyleAttr}></div>\n`;
 }
 
 // JSX-aware layer HTML generation with registry
 async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isTopLevel: boolean, parentIsAutoLayout: boolean, registry: TokenRegistry, assets: AssetMap, usedFileNames: Set<string>, importCollector: ImportCollector): Promise<string> {
-  if (indent > 10) return '';
   if (node.visible === false) return '';
 
   const pad = '  '.repeat(indent);
@@ -3233,24 +3680,25 @@ async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isT
   const semantic = detectSemanticElement(node, isTopLevel);
   const allClasses = [...classes, ...semantic.extraClasses];
   const shadcn = detectShadcnComponent(node, semantic.tag);
+  let backgroundStyleAttr = '';
 
   // Image fills
   if (hasImageFill(node)) {
-    const imgClasses = [...allClasses, ...getImageClasses(node, parentIsAutoLayout)];
-    const imgClassStr = imgClasses.length > 0 ? ` className="${imgClasses.join(' ')}"` : '';
-    const name = node.name || 'image';
-    const id = nextAssetId();
-    try {
-      const bytes = await (node as any).exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: 2 } });
-      assets[id] = {
-        base64: uint8ToBase64(bytes),
-        mimeType: 'image/png',
-        fileName: toAssetFileName(name, 'png', usedFileNames),
-      };
-    } catch (e) {
-      return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    const imageUsage = classifyImageFillUsage(node, parentIsAutoLayout);
+    const exported = await exportImageFillToAsset(node, assets, usedFileNames);
+    if (imageUsage === 'image') {
+      const imgClasses = [...allClasses, ...getImageClasses(node, parentIsAutoLayout)];
+      const imgClassStr = imgClasses.length > 0 ? ` className="${imgClasses.join(' ')}"` : '';
+      if (!exported) {
+        const alt = (node.name || 'image').replace(/"/g, '&quot;');
+        return `${pad}<img${imgClassStr} src="/placeholder.svg" alt="${alt}" />\n`;
+      }
+      return `${pad}<img${imgClassStr} src="{{asset:${exported.id}}}" alt="${exported.alt}" />\n`;
     }
-    return `${pad}<img${imgClassStr} src="{{asset:${id}}}" alt="${name.replace(/"/g, '&quot;')}" />\n`;
+    if (exported) {
+      allClasses.push(...getBackgroundImageClasses(node));
+      backgroundStyleAttr = ` style={{ backgroundImage: "url('{{asset:${exported.id}}}')" }}`;
+    }
   }
 
   if (node.type === 'TEXT') {
@@ -3284,14 +3732,14 @@ async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isT
     if (shadcn) {
       importCollector.add(shadcn);
       const scClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
-      return `${pad}<${shadcn.name}${scClassStr} />\n`;
+      return `${pad}<${shadcn.name}${scClassStr}${backgroundStyleAttr} />\n`;
     }
     if (semantic.selfClosing) {
       const hrClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
-      return `${pad}<${semantic.tag}${hrClassStr} />\n`;
+      return `${pad}<${semantic.tag}${hrClassStr}${backgroundStyleAttr} />\n`;
     }
     const finalClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
-    return `${pad}<div${finalClassStr}></div>\n`;
+    return `${pad}<div${finalClassStr}${backgroundStyleAttr}></div>\n`;
   }
 
   if (node.type === 'GROUP') {
@@ -3299,10 +3747,12 @@ async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isT
       return await exportCompositeImage(node, indent, pad, [], assets, usedFileNames, true);
     }
     const group = node as GroupNode;
-    let html = '';
+    const groupClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
+    let html = `${pad}<div${groupClassStr}>\n`;
     for (const child of group.children) {
-      html += await generateLayerJSXWithRegistry(child, indent, false, false, registry, assets, usedFileNames, importCollector);
+      html += await generateLayerJSXWithRegistry(child, indent + 1, false, false, registry, assets, usedFileNames, importCollector);
     }
+    html += `${pad}</div>\n`;
     return html;
   }
 
@@ -3320,10 +3770,11 @@ async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isT
       tag = shadcn.name;
     }
 
-    if (semantic.selfClosing) {
+    const canSelfClose = semantic.selfClosing && frame.children.length === 0;
+    if (canSelfClose) {
       const scClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
       const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
-      return `${pad}<${tag}${scClassStr}${attrStr} />\n`;
+      return `${pad}<${tag}${scClassStr}${backgroundStyleAttr}${attrStr} />\n`;
     }
 
     let html = '';
@@ -3332,7 +3783,7 @@ async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isT
     }
     const finalClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
     const attrStr = semantic.attrs ? ` ${semantic.attrs}` : '';
-    html += `${pad}<${tag}${finalClassStr}${attrStr}>\n`;
+    html += `${pad}<${tag}${finalClassStr}${backgroundStyleAttr}${attrStr}>\n`;
 
     for (const child of frame.children) {
       if (child.visible === false) continue;
@@ -3348,7 +3799,10 @@ async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isT
           const text = getTextContent(child as TextNode);
           html += `${pad}  <${childSemantic.tag} className="${childClasses.join(' ')}">${text}</${childSemantic.tag}>\n`;
         } else {
-          html += await generateLayerJSXWithRegistry(child, indent + 1, false, false, registry, assets, usedFileNames, importCollector);
+          const overlayClassStr = childClasses.length > 0 ? ` className="${childClasses.join(' ')}"` : '';
+          html += `${pad}  <div${overlayClassStr}>\n`;
+          html += await generateLayerJSXWithRegistry(child, indent + 2, false, false, registry, assets, usedFileNames, importCollector);
+          html += `${pad}  </div>\n`;
         }
       } else {
         if (semantic.wrapChildren) {
@@ -3366,7 +3820,7 @@ async function generateLayerJSXWithRegistry(node: SceneNode, indent: number, isT
   }
 
   const fallbackClassStr = allClasses.length > 0 ? ` className="${allClasses.join(' ')}"` : '';
-  return `${pad}<div${fallbackClassStr}></div>\n`;
+  return `${pad}<div${fallbackClassStr}${backgroundStyleAttr}></div>\n`;
 }
 
 // Cache for re-generation when options change
